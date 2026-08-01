@@ -9,3 +9,11 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
     mem_limit: 64m
+  api:
+    image: ghcr.io/qclawchang/family-media-api:latest
+    container_name: homelab-family-api
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - /opt/family-media/api/.env:/app/.env:ro
+    mem_limit: 640m
