@@ -17,3 +17,30 @@ services:
     volumes:
       - /opt/family-media/api/.env:/app/.env:ro
     mem_limit: 640m
+  securevault-api:
+    image: ghcr.io/qclawchang/securevault-api:latest
+    container_name: homelab-securevault-api
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - NODE_ENV
+      - PORT
+      - JWT_SECRET
+      - TOTP_ENCRYPTION_KEY
+      - INHERITANCE_HINT_SECRET
+      - ALLOWED_ORIGINS
+      - DATABASE_URL
+      - GOOGLE_CLIENT_ID
+      - GOOGLE_CLIENT_SECRET
+      - GOOGLE_REDIRECT_URI
+      - FRONTEND_URL
+      - CAPTCHA_PROVIDER
+      - CAPTCHA_SECRET
+      - SMTP_HOST
+      - SMTP_PORT
+      - SMTP_SECURE
+      - SMTP_USER
+      - SMTP_PASS
+      - EMAIL_FROM
+      - PASSWORD_RESET_PATH
+    mem_limit: 256m
