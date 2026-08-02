@@ -1,70 +1,109 @@
 # homelab-infra
 
-Docker Compose orchestration for the services running on the shared
-Lightsail box (`ubuntu@ip-172-26-13-172`). This repo holds only compose
-files, nginx config, and deploy-support scripts — application code stays
-in each product's own repo.
+Docker Compose orchestration for the shared Lightsail box
+(`ubuntu@ip-172-26-13-172`). This public repository contains only Compose,
+nginx configuration, and deploy-support scripts. It never contains runtime env
+files, certificates, database credentials, or GHCR tokens.
 
-Checked out on the box at `/opt/homelab-infra`.
+The checkout on the host is `/opt/homelab-infra`. Application source code and
+release workflows remain in their own repositories.
 
-See `family-media`'s `docs/superpowers/specs/2026-08-01-homelab-infra-docker-design.md`
-for the full design and rollout plan.
+## Services and routing
 
-## Services
+| Compose service | Container | Host port | Public hostnames |
+| --- | --- | ---: | --- |
+| `nginx` | `homelab-nginx` | 80 / 443 | all hosts below |
+| `api` | `homelab-family-api` | 4000 | `api.family.valtou.com` |
+| `securevault-api` | `homelab-securevault-api` | 3000 | `api.valtou.com` |
+| `dayandyou-prod` | `homelab-dayandyou-prod` | 3003 | `dayandyou.com`, `www.dayandyou.com` |
+| `dayandyou-staging` | `homelab-dayandyou-staging` | 3002 | `staging.dayandyou.com` |
 
-- `nginx` — reverse proxy for all domains on the box, `network_mode: host`.
-- `api` (family-media), `securevault-api`, `dayandyou-staging`, and
-  `dayandyou-prod` — application containers on the host network.
+Every service uses `network_mode: host`; the application ports must remain
+firewalled from the public internet. Docker nginx is the only public reverse
+proxy. All app services have explicit memory limits; limits are ceilings, not
+reserved memory.
 
-All application services use explicit memory limits. `api` uses the image
-  `ghcr.io/qclawchang/family-media-api`.
+## Normal deployment model
 
-## Onboarding a new service
+Each product's GitHub Actions workflow builds and pushes its own GHCR image,
+runs any required migration, then SSHes to this host to update exactly one named
+service:
 
-1. Add its service block to `docker-compose.yml` here, commit, push.
-2. On the box: `cd /opt/homelab-infra && git pull`.
-3. `docker compose pull <service> && docker compose up -d <service>`.
+```bash
+cd /opt/homelab-infra
+git pull --ff-only
+docker compose pull <service>
+docker compose up -d <service>
+```
 
-Ordinary deploys of an already-onboarded service only need step 3, run
-from that product's own CI.
+For an existing service, never run an unqualified `docker compose up -d` during
+a product deploy. It risks restarting unrelated sites. The application workflow
+is responsible for migrations; this repository is responsible for runtime
+orchestration only.
+
+## Day-to-day operations
+
+```bash
+cd /opt/homelab-infra
+docker compose ps
+docker compose logs --tail=100 <service>
+docker compose restart <service>
+docker stats --no-stream
+```
+
+Health checks on the host:
+
+```bash
+curl -fsS http://127.0.0.1:4000/health  # family API
+curl -fsS http://127.0.0.1:3000/health  # SecureVault API
+curl -fsS http://127.0.0.1:3003/         # Day and You production
+curl -fsS http://127.0.0.1:3002/         # Day and You staging
+```
+
+Use `docker compose config` before applying a Compose or nginx configuration
+change. Check nginx syntax without replacing the running container:
+
+```bash
+docker compose run --rm --no-deps nginx nginx -t
+```
+
+## Secrets and state
+
+- Family Media persists its API env only at
+  `/opt/secrets/family-media/.env`; Compose mounts it read-only at `/app/.env`.
+  It must be readable by the Compose user and mode `0600`.
+- SecureVault and Day and You receive runtime variables from their deployment
+  workflows; do not add their values to this repository.
+- PostgreSQL runs natively on Lightsail and is backed up separately. It is not
+  a Compose service.
+- Certbot state lives under `/etc/letsencrypt`; ACME challenge files live at
+  `/var/lib/homelab-acme` and are mounted read-only into Docker nginx.
 
 ## Certificate renewal (Certbot webroot)
 
-The host owns Certbot and `/var/lib/homelab-acme`; Docker nginx has a
-read-only mount and serves only HTTP-01 challenges from that path. Do not use
-`certbot --nginx`: the host nginx service is intentionally stopped.
+The Certbot webroot migration completed on 2026-08-02. Docker nginx serves
+HTTP-01 challenges from `/var/lib/homelab-acme` and the Certbot deploy hook
+reloads the `nginx` container after renewal.
 
-One-time migration on the Lightsail host:
-
-```bash
-sudo install -d -o root -g root -m 0755 /var/lib/homelab-acme
-cd /opt/homelab-infra
-git pull --ff-only
-docker compose run --rm --no-deps nginx nginx -t
-docker compose up -d nginx
-sudo install -D -o root -g root -m 0755 \
-  scripts/reload-nginx-after-cert-renewal.sh \
-  /etc/letsencrypt/renewal-hooks/deploy/10-reload-homelab-nginx
-```
-
-Reissue each existing lineage once with the webroot authenticator. Confirm the
-certificate names first with `sudo certbot certificates`; then run the matching
-commands below (replace a name only when `certbot certificates` shows a
-different `Certificate Name`):
+Normal verification:
 
 ```bash
-sudo certbot certonly --webroot -w /var/lib/homelab-acme --cert-name api.family.valtou.com \
-  -d api.family.valtou.com --force-renewal
-sudo certbot certonly --webroot -w /var/lib/homelab-acme --cert-name api.valtou.com \
-  -d api.valtou.com --force-renewal
-sudo certbot certonly --webroot -w /var/lib/homelab-acme --cert-name dayandyou.com \
-  -d dayandyou.com -d www.dayandyou.com --force-renewal
-sudo certbot certonly --webroot -w /var/lib/homelab-acme --cert-name staging.dayandyou.com \
-  -d staging.dayandyou.com --force-renewal
 sudo certbot renew --dry-run
+cd /opt/homelab-infra
+docker compose logs --since 10m nginx
 ```
 
-`--force-renewal` is only for this one-time authenticator migration; do not
-repeat it in normal maintenance. A successful dry run must report every
-certificate as simulated renewal success. Confirm nginx received the deploy
-hook reload with `docker compose logs --since 10m nginx`.
+Do not use `certbot --nginx`: the host nginx service is intentionally stopped.
+Do not repeat the migration's `certbot certonly --force-renewal` commands during
+normal maintenance.
+
+## Onboarding a new service
+
+1. Add the Compose service, image, memory limit, and any needed nginx server
+   block in this repository. Do not put secrets in Compose.
+2. Validate locally with `docker compose config` and nginx syntax validation.
+3. Merge and pull this repository on the host.
+4. Ensure the product repository's workflow builds/pushes its image and starts
+   only its named service.
+5. Add its hostname to the Certbot webroot procedure and verify a local ACME
+   probe before requesting a certificate.
