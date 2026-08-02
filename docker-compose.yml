@@ -44,3 +44,61 @@ services:
       - EMAIL_FROM
       - PASSWORD_RESET_PATH
     mem_limit: 256m
+  dayandyou-staging:
+    image: ghcr.io/qclawchang/dayandyou:staging
+    container_name: homelab-dayandyou-staging
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - NODE_ENV
+      - PORT
+      - DATABASE_URL
+      - DIRECT_URL
+      - NEXTAUTH_SECRET
+      - NEXTAUTH_URL
+      - STRIPE_SECRET_KEY
+      - STRIPE_WEBHOOK_SECRET
+      - NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_REGION
+      - AWS_S3_BUCKET
+      - ASSET_BASE_URL
+      - NEXT_PUBLIC_ASSET_BASE_URL
+      - AWS_SES_REGION
+      - AWS_SES_ACCESS_KEY_ID
+      - AWS_SES_SECRET_ACCESS_KEY
+      - AWS_SES_FROM
+      - ADMIN_EMAIL
+      - NEXT_PUBLIC_APP_URL
+      - SITE_MODE
+    mem_limit: 350m
+  dayandyou-prod:
+    image: ghcr.io/qclawchang/dayandyou:release
+    container_name: homelab-dayandyou-prod
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - NODE_ENV
+      - PORT
+      - DATABASE_URL
+      - DIRECT_URL
+      - NEXTAUTH_SECRET
+      - NEXTAUTH_URL
+      - STRIPE_SECRET_KEY
+      - STRIPE_WEBHOOK_SECRET
+      - NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_REGION
+      - AWS_S3_BUCKET
+      - ASSET_BASE_URL
+      - NEXT_PUBLIC_ASSET_BASE_URL
+      - AWS_SES_REGION
+      - AWS_SES_ACCESS_KEY_ID
+      - AWS_SES_SECRET_ACCESS_KEY
+      - AWS_SES_FROM
+      - ADMIN_EMAIL
+      - NEXT_PUBLIC_APP_URL
+      - SITE_MODE
+    mem_limit: 400m
