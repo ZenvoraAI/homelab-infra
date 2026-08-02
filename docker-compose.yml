@@ -16,7 +16,7 @@ services:
     network_mode: host
     restart: unless-stopped
     volumes:
-      - /opt/family-media/api/.env:/app/.env:ro
+      - /opt/secrets/family-media/.env:/app/.env:ro
     mem_limit: 640m
   securevault-api:
     image: ghcr.io/qclawchang/securevault-api:latest
