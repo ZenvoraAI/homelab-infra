@@ -103,3 +103,19 @@ services:
       - NEXT_PUBLIC_APP_URL
       - SITE_MODE
     mem_limit: 400m
+  memorial-api:
+    image: ghcr.io/qclawchang/aiqiuqi-memorial-api:latest
+    container_name: homelab-memorial-api
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - /opt/secrets/aiqiuqi-memorial/api.env
+    mem_limit: 192m
+  memorial-worker:
+    image: ghcr.io/qclawchang/aiqiuqi-memorial-worker:latest
+    container_name: homelab-memorial-worker
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - /opt/secrets/aiqiuqi-memorial/worker.env
+    mem_limit: 384m
