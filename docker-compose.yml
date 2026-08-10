@@ -104,7 +104,7 @@ services:
       - SITE_MODE
     mem_limit: 400m
   memorial-api:
-    image: ghcr.io/qclawchang/aiqiuqi-memorial-api:latest
+    image: ghcr.io/qclawchang/aiqiuqi-memorial-api:${MEMORIAL_API_TAG:-latest}
     container_name: homelab-memorial-api
     network_mode: host
     restart: unless-stopped
@@ -112,7 +112,7 @@ services:
       - /opt/secrets/aiqiuqi-memorial/api.env
     mem_limit: 192m
   memorial-worker:
-    image: ghcr.io/qclawchang/aiqiuqi-memorial-worker:latest
+    image: ghcr.io/qclawchang/aiqiuqi-memorial-worker:${MEMORIAL_WORKER_TAG:-latest}
     container_name: homelab-memorial-worker
     network_mode: host
     restart: unless-stopped
