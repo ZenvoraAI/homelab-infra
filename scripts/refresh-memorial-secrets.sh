@@ -12,6 +12,11 @@ PROFILE=${AWS_PROFILE:-memorial-ssm}
 
 test -f "$ENV_FILE" || { echo "refresh-memorial-secrets: $ENV_FILE not found" >&2; exit 1; }
 
+# Preserve the original owner: this script runs via sudo, and docker compose
+# (which reads this file) does not, so a root-owned rewrite would lock
+# compose out of a file it could read a moment ago.
+ORIG_OWNER=$(stat -c '%u:%g' "$ENV_FILE")
+
 KEY_PAIR_ID=$(aws ssm get-parameter --profile "$PROFILE" \
   --name "$PARAM_PREFIX/CLOUDFRONT_MEDIA_KEY_PAIR_ID" \
   --query Parameter.Value --output text)
@@ -27,6 +32,7 @@ esac
 
 BACKUP="$ENV_FILE.bak-$(date -u +%Y%m%dT%H%M%SZ)"
 cp "$ENV_FILE" "$BACKUP"
+chown "$ORIG_OWNER" "$BACKUP"
 chmod 600 "$BACKUP"
 
 TMP=$(mktemp)
@@ -38,6 +44,7 @@ grep -v '^CLOUDFRONT_MEDIA_KEY_PAIR_ID=\|^CLOUDFRONT_MEDIA_PRIVATE_KEY=' "$ENV_F
 } > "$ENV_FILE.new"
 rm -f "$TMP"
 mv "$ENV_FILE.new" "$ENV_FILE"
+chown "$ORIG_OWNER" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
 echo "refresh-memorial-secrets: updated CLOUDFRONT_MEDIA_KEY_PAIR_ID and CLOUDFRONT_MEDIA_PRIVATE_KEY in $ENV_FILE (backup: $BACKUP)"
