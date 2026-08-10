@@ -30,6 +30,13 @@ case "$PRIVATE_KEY" in
   *) echo "refresh-memorial-secrets: fetched private key doesn't look like a PEM (missing BEGIN/END) -- aborting, $ENV_FILE not touched" >&2; exit 1 ;;
 esac
 
+# Keep only the most recent backup before adding today's: an exposed private
+# key must actually stop existing on disk once rotated, not just stop being
+# trusted by CloudFront (that only affects future signature validation).
+for old in $(ls -t "$ENV_FILE".bak-* 2>/dev/null | tail -n +2); do
+  rm -f "$old"
+done
+
 BACKUP="$ENV_FILE.bak-$(date -u +%Y%m%dT%H%M%SZ)"
 cp "$ENV_FILE" "$BACKUP"
 chown "$ORIG_OWNER" "$BACKUP"
@@ -40,18 +47,23 @@ TMP=$(mktemp)
 # hand-copy that picked up hard-wraps), so only the first of those lines
 # matches a plain key-prefix filter — the rest would leak through as
 # orphaned garbage. Strip the whole span between the key line and its own
-# "-----END PRIVATE KEY-----" marker, however many lines it occupies.
+# END marker, however many lines it occupies. The wildcard between END and
+# PRIVATE KEY covers both PKCS1 ("END RSA PRIVATE KEY") and PKCS8 ("END
+# PRIVATE KEY") -- getting this wrong silently drops every line after it.
 awk '
   /^CLOUDFRONT_MEDIA_KEY_PAIR_ID=/ { next }
   /^CLOUDFRONT_MEDIA_PRIVATE_KEY=/ { skipping = 1 }
-  skipping { if ($0 ~ /-----END PRIVATE KEY-----/) skipping = 0; next }
+  skipping { if ($0 ~ /-----END.*PRIVATE KEY-----/) skipping = 0; next }
   { print }
 ' "$ENV_FILE" > "$TMP"
-{
-  cat "$TMP"
-  printf 'CLOUDFRONT_MEDIA_KEY_PAIR_ID=%s\n' "$KEY_PAIR_ID"
-  printf 'CLOUDFRONT_MEDIA_PRIVATE_KEY=%s\n' "$PRIVATE_KEY"
-} > "$ENV_FILE.new"
+(
+  umask 077
+  {
+    cat "$TMP"
+    printf 'CLOUDFRONT_MEDIA_KEY_PAIR_ID=%s\n' "$KEY_PAIR_ID"
+    printf 'CLOUDFRONT_MEDIA_PRIVATE_KEY=%s\n' "$PRIVATE_KEY"
+  } > "$ENV_FILE.new"
+)
 rm -f "$TMP"
 mv "$ENV_FILE.new" "$ENV_FILE"
 chown "$ORIG_OWNER" "$ENV_FILE"
