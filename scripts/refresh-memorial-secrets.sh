@@ -36,7 +36,17 @@ chown "$ORIG_OWNER" "$BACKUP"
 chmod 600 "$BACKUP"
 
 TMP=$(mktemp)
-grep -v '^CLOUDFRONT_MEDIA_KEY_PAIR_ID=\|^CLOUDFRONT_MEDIA_PRIVATE_KEY=' "$ENV_FILE" > "$TMP" || true
+# A previously-corrupted private key can span multiple physical lines (a
+# hand-copy that picked up hard-wraps), so only the first of those lines
+# matches a plain key-prefix filter — the rest would leak through as
+# orphaned garbage. Strip the whole span between the key line and its own
+# "-----END PRIVATE KEY-----" marker, however many lines it occupies.
+awk '
+  /^CLOUDFRONT_MEDIA_KEY_PAIR_ID=/ { next }
+  /^CLOUDFRONT_MEDIA_PRIVATE_KEY=/ { skipping = 1 }
+  skipping { if ($0 ~ /-----END PRIVATE KEY-----/) skipping = 0; next }
+  { print }
+' "$ENV_FILE" > "$TMP"
 {
   cat "$TMP"
   printf 'CLOUDFRONT_MEDIA_KEY_PAIR_ID=%s\n' "$KEY_PAIR_ID"
