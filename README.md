@@ -105,6 +105,41 @@ file on disk breaks nothing. Validate, then recreate.
 - Certbot state lives under `/etc/letsencrypt`; ACME challenge files live at
   `/var/lib/homelab-acme` and are mounted read-only into Docker nginx.
 
+## Container logs are bounded in two places
+
+Docker's `json-file` driver has no size limit by default, and a full disk takes
+down every site at once because they all share one box. The disk already filled
+on 2026-08-12 from image accumulation — `scripts/docker-prune.sh` handles that
+half; unbounded logs are the same failure by another route.
+
+| Where | Covers | Takes effect |
+| --- | --- | --- |
+| `x-logging` anchor in `docker-compose.yml` | every service here | when a container is next recreated, which every deploy does |
+| `/etc/docker/daemon.json` on the host | anything started outside Compose | when the Docker daemon next restarts |
+
+Both say `max-size: 10m`, `max-file: 3` — 30 MB per container, ~210 MB in total
+against a 58 GB disk. An explicit setting in Compose wins over the daemon
+default, and they agree anyway.
+
+Neither was applied by restarting the Docker daemon. A daemon restart bounces
+every container, and log settings are baked in at container creation, so a
+restart would have caused an outage *and* still left the existing containers
+unbounded until each was recreated. Letting each service pick the limit up on
+its next deploy costs nothing.
+
+Validate a `daemon.json` edit before it can break anything — a malformed file
+stops Docker from starting at all:
+
+```bash
+sudo dockerd --validate --config-file=/etc/docker/daemon.json
+```
+
+Check what a running container actually got:
+
+```bash
+docker inspect <container> --format '{{.HostConfig.LogConfig}}'
+```
+
 ## Certificate renewal (Certbot webroot)
 
 The Certbot webroot migration completed on 2026-08-02. Docker nginx serves
