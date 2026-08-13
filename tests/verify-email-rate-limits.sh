@@ -26,11 +26,19 @@ require() {
 require nginx/nginx.conf 'limit_req_zone $binary_remote_addr zone=email_ep:10m rate=5r/m;'
 
 # SecureVault's two endpoints that send email without requiring a login.
-# /api/auth/password-reset is a prefix match so it covers /request and
-# /confirm; /api/contact is an exact match because the route is mounted at the
-# prefix root (router.post('/')).
+# /api/auth/password-reset is a prefix match so it covers /request and /confirm.
+#
+# /api/contact must be the anchored regex, NOT `= /api/contact`: express runs
+# with strict routing off, so POST /api/contact/ reaches the same handler and an
+# exact-match location is bypassed by appending one slash. Verified against
+# production before the fix: both spellings returned 400, i.e. both reached the
+# app. Asserted here so the weaker form cannot come back.
 require nginx/conf.d/valtou-api.conf 'location ^~ /api/auth/password-reset {'
-require nginx/conf.d/valtou-api.conf 'location = /api/contact {'
+require nginx/conf.d/valtou-api.conf 'location ~ ^/api/contact/?$ {'
+grep -Fq 'location = /api/contact' "$ROOT/nginx/conf.d/valtou-api.conf" && {
+  echo 'valtou-api.conf uses an exact-match /api/contact location, which /api/contact/ bypasses' >&2
+  exit 1
+}
 
 count="$(grep -c 'limit_req zone=email_ep burst=3 nodelay;' "$ROOT/nginx/conf.d/valtou-api.conf")"
 [ "$count" -eq 2 ] || {
