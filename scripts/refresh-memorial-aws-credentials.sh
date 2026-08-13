@@ -1,0 +1,130 @@
+#!/bin/sh
+set -eu
+
+# Pulls the memorial API and worker AWS credentials out of SSM Parameter Store
+# and writes them into their env files. Never echoes the fetched values.
+#
+# Why this exists: both containers ran for weeks with the literal placeholder
+# text from the setup notes as their AWS_ACCESS_KEY_ID. Every media upload
+# failed, and nothing said so -- the admin UI had no upload entry point at the
+# time, so no one exercised the path. Hand-filled secrets are the failure mode;
+# this removes the hand.
+#
+# The validation below is the actual guard. Fetching from SSM only moves where
+# the value is typed; refusing to write a value that is not shaped like an AWS
+# key is what makes the placeholder impossible to install a second time. It runs
+# BEFORE anything is written, so a bad parameter leaves both env files untouched.
+#
+# The API and the worker deliberately use different IAM users -- qiuqi-api can
+# reach memorial/staging and memorial/originals, the worker memorial/originals
+# and memorial/derived -- so each has its own pair of parameters.
+#
+# Usage, on the host:
+#   sudo AWS_PROFILE=memorial-ssm ./refresh-memorial-aws-credentials.sh
+#   cd /opt/homelab-infra && sudo docker compose up -d --force-recreate memorial-api memorial-worker
+#
+# The recreate is not optional: docker compose reads env_file at container
+# creation, so an updated file changes nothing until the container is replaced.
+
+SECRETS_DIR=${SECRETS_DIR:-/opt/secrets/aiqiuqi-memorial}
+PARAM_PREFIX=${PARAM_PREFIX:-/aiqiuqi-memorial/preview}
+PROFILE=${AWS_PROFILE:-memorial-ssm}
+
+# service:env-file:ssm-parameter-prefix
+TARGETS="api:${SECRETS_DIR}/api.env:API worker:${SECRETS_DIR}/worker.env:WORKER"
+
+fail() { echo "refresh-memorial-aws-credentials: $*" >&2; exit 1; }
+
+command -v aws >/dev/null || fail "aws CLI not found"
+
+ssm_get() {
+  aws ssm get-parameter --profile "$PROFILE" --with-decryption \
+    --name "$PARAM_PREFIX/$1" --query Parameter.Value --output text 2>/dev/null || true
+}
+
+# An AWS access key id is AKIA followed by 16 uppercase alphanumerics. The
+# placeholder was Chinese text; so would be "changeme", "TODO", or a truncated
+# paste. All of them fail this.
+valid_key_id() {
+  printf '%s' "$1" | grep -Eq '^AKIA[0-9A-Z]{16}$'
+}
+
+# Secret access keys are 40 characters of base64 alphabet. Length alone catches
+# a truncated copy, which is the failure that produces the most confusing
+# symptom: a signature error rather than an obviously absent credential.
+valid_secret() {
+  printf '%s' "$1" | grep -Eq '^[A-Za-z0-9/+=]{40}$'
+}
+
+# ---------------------------------------------------------------------------
+# Fetch and validate everything before writing anything.
+# ---------------------------------------------------------------------------
+for target in $TARGETS; do
+  service=${target%%:*}
+  rest=${target#*:}
+  env_file=${rest%%:*}
+  param=${rest#*:}
+
+  test -f "$env_file" || fail "$env_file not found (service: $service)"
+
+  key_id=$(ssm_get "${param}_AWS_ACCESS_KEY_ID")
+  secret=$(ssm_get "${param}_AWS_SECRET_ACCESS_KEY")
+
+  test -n "$key_id" || fail "$PARAM_PREFIX/${param}_AWS_ACCESS_KEY_ID is empty or unreadable"
+  test -n "$secret" || fail "$PARAM_PREFIX/${param}_AWS_SECRET_ACCESS_KEY is empty or unreadable"
+
+  # Report the shape, never the value.
+  valid_key_id "$key_id" || fail "${param}_AWS_ACCESS_KEY_ID is not an AWS access key id (expected AKIA + 16 uppercase alphanumerics, got ${#key_id} characters). Nothing written."
+  valid_secret "$secret" || fail "${param}_AWS_SECRET_ACCESS_KEY is not a 40-character AWS secret (got ${#secret} characters). Nothing written."
+
+  eval "KEY_ID_${service}=\$key_id"
+  eval "SECRET_${service}=\$secret"
+done
+
+# ---------------------------------------------------------------------------
+# Write.
+# ---------------------------------------------------------------------------
+for target in $TARGETS; do
+  service=${target%%:*}
+  rest=${target#*:}
+  env_file=${rest%%:*}
+
+  eval "key_id=\$KEY_ID_${service}"
+  eval "secret=\$SECRET_${service}"
+
+  # This script runs under sudo; docker compose, which reads the file, does not.
+  # A root-owned rewrite would lock compose out of a file it could read a moment
+  # ago -- the same trap refresh-memorial-secrets.sh documents.
+  orig_owner=$(stat -c '%u:%g' "$env_file")
+
+  # Keep one previous copy only. A rotated credential should stop existing on
+  # disk, not accumulate in backups next to the file that replaced it.
+  for old in $(ls -t "$env_file".bak-* 2>/dev/null | tail -n +2); do
+    rm -f "$old"
+  done
+  backup="$env_file.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+  cp "$env_file" "$backup"
+  chown "$orig_owner" "$backup"
+  chmod 600 "$backup"
+
+  tmp=$(mktemp)
+  grep -v -E '^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)=' "$env_file" > "$tmp" || true
+  (
+    umask 077
+    {
+      cat "$tmp"
+      printf 'AWS_ACCESS_KEY_ID=%s\n' "$key_id"
+      printf 'AWS_SECRET_ACCESS_KEY=%s\n' "$secret"
+    } > "$env_file.new"
+  )
+  rm -f "$tmp"
+  mv "$env_file.new" "$env_file"
+  chown "$orig_owner" "$env_file"
+  chmod 600 "$env_file"
+
+  echo "refresh-memorial-aws-credentials: $env_file updated (key ...${key_id#????????????????}, backup: $backup)"
+done
+
+echo
+echo "Recreate the containers -- an updated env_file does nothing until they are replaced:"
+echo "  cd /opt/homelab-infra && sudo docker compose up -d --force-recreate memorial-api memorial-worker"
