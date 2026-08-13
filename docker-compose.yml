@@ -1,9 +1,31 @@
+# Docker's json-file driver has no size limit by default, so every container
+# here would grow its log without bound until the disk filled. That is not
+# hypothetical on this host: the disk did fill on 2026-08-12 -- from image
+# accumulation, which scripts/docker-prune.sh now handles -- and unbounded logs
+# are the same failure by a different route. A full disk takes down every site
+# at once, because they all share one box.
+#
+# 10m x 3 files is 30 MB per container, ~210 MB in total against a 58 GB disk.
+# Logs measured under 1 MB per container on 2026-08-13, so this is a ceiling
+# rather than a change to anything.
+#
+# Applies to a container when it is next recreated, which every deploy does.
+# /etc/docker/daemon.json carries the same defaults as a safety net for
+# anything started outside this file; an explicit setting here wins over that
+# default, and they agree anyway.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   nginx:
     image: nginx:1.27-alpine
     container_name: homelab-nginx
     network_mode: host
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
@@ -15,6 +37,7 @@ services:
     container_name: homelab-family-api
     network_mode: host
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - /opt/secrets/family-media/.env:/app/.env:ro
     mem_limit: 640m
@@ -23,6 +46,7 @@ services:
     container_name: homelab-securevault-api
     network_mode: host
     restart: unless-stopped
+    logging: *default-logging
     environment:
       - NODE_ENV
       - PORT
@@ -59,6 +83,7 @@ services:
     container_name: homelab-dayandyou-staging
     network_mode: host
     restart: unless-stopped
+    logging: *default-logging
     environment:
       - NODE_ENV
       - PORT
@@ -88,6 +113,7 @@ services:
     container_name: homelab-dayandyou-prod
     network_mode: host
     restart: unless-stopped
+    logging: *default-logging
     environment:
       - NODE_ENV
       - PORT
@@ -117,6 +143,7 @@ services:
     container_name: homelab-memorial-api
     network_mode: host
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - /opt/secrets/aiqiuqi-memorial/api.env
     mem_limit: 192m
@@ -125,6 +152,7 @@ services:
     container_name: homelab-memorial-worker
     network_mode: host
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - /opt/secrets/aiqiuqi-memorial/worker.env
     mem_limit: 384m
