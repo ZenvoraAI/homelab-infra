@@ -8,8 +8,8 @@ set -euo pipefail
 #   - nginx had no rate limit on any email-sending endpoint
 #   - TRUST_PROXY was exported by SecureVault's deploy workflow but never
 #     declared in this repository's compose file, so it never reached the
-#     container. express then saw 127.0.0.1 for every request and all ten of
-#     SecureVault's rate limiters bucketed every user together.
+#     container. express then saw 127.0.0.1 for every request and every one of
+#     SecureVault's rate limiters bucketed all users together.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

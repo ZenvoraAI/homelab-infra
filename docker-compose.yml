@@ -28,8 +28,8 @@ services:
       - PORT
       # The API sits behind this repository's nginx, so express must trust one
       # proxy hop to see the real client IP. Without it every client collapses
-      # into 127.0.0.1 and all ten of SecureVault's rate limiters bucket every
-      # user together -- five contact submissions from one attacker then lock
+      # into 127.0.0.1 and every one of SecureVault's rate limiters buckets all
+      # users together -- five contact submissions from one attacker then lock
       # the contact form and password reset for everybody.
       # SecureVault's deploy workflow has always exported TRUST_PROXY=1; it was
       # simply never declared here, so it never reached the container. Found
