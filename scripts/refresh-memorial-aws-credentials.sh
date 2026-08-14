@@ -37,6 +37,20 @@ fail() { echo "refresh-memorial-aws-credentials: $*" >&2; exit 1; }
 
 command -v aws >/dev/null || fail "aws CLI not found"
 
+# The usage line above says sudo, because writing the 0600 env files requires it.
+# But sudo also replaces HOME with root's, and the aws CLI resolves ~/.aws from
+# HOME -- so the profile fails with "could not be found", which reads like a
+# missing profile rather than a lost search path and sends you looking in the
+# wrong place. Point it back at the invoking user's files. Explicit values still
+# win, so either can be overridden.
+if [ -n "${SUDO_USER:-}" ]; then
+  sudo_home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+  [ -n "$sudo_home" ] || sudo_home="/home/$SUDO_USER"
+  : "${AWS_SHARED_CREDENTIALS_FILE:=$sudo_home/.aws/credentials}"
+  : "${AWS_CONFIG_FILE:=$sudo_home/.aws/config}"
+  export AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE
+fi
+
 ssm_get() {
   aws ssm get-parameter --profile "$PROFILE" --with-decryption \
     --name "$PARAM_PREFIX/$1" --query Parameter.Value --output text 2>/dev/null || true
