@@ -24,9 +24,15 @@ x-logging: &default-logging
 # under a different GHCR namespace. GHCR packages do not follow a repository
 # transfer -- the old ghcr.io/qclawchang/* packages still exist but nothing
 # pushes to them any more, so pinning to them would pull a frozen image for
-# ever without any error to notice. GHCR_OWNER exists only so this host can be
-# pointed elsewhere without an edit; the default is the answer in every case
-# today.
+# ever without any error to notice.
+#
+# The organisation is spelled ZenvoraAI, but this says zenvoraai: a Docker
+# image reference must be lower case or the client rejects it outright with
+# "repository name must be lowercase" -- it never reaches the registry. That
+# is also why the workflows that build these images spell it out rather than
+# using ${{ github.repository_owner }}, which returns the capitalised form.
+# GHCR_OWNER exists only so this host can be pointed elsewhere without an
+# edit; the default is the answer in every case today.
 services:
   nginx:
     image: nginx:1.27-alpine
@@ -41,7 +47,7 @@ services:
       - /var/lib/homelab-acme:/var/www/certbot:ro
     mem_limit: 64m
   api:
-    image: ghcr.io/${GHCR_OWNER:-ZenvoraAI}/family-media-api:latest
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/family-media-api:latest
     container_name: homelab-family-api
     network_mode: host
     restart: unless-stopped
@@ -50,7 +56,7 @@ services:
       - /opt/secrets/family-media/.env:/app/.env:ro
     mem_limit: 640m
   securevault-api:
-    image: ghcr.io/${GHCR_OWNER:-ZenvoraAI}/securevault-api:latest
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api:latest
     container_name: homelab-securevault-api
     network_mode: host
     restart: unless-stopped
@@ -87,7 +93,7 @@ services:
       - PASSWORD_RESET_PATH
     mem_limit: 256m
   dayandyou-staging:
-    image: ghcr.io/${GHCR_OWNER:-ZenvoraAI}/dayandyou:staging
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:staging
     container_name: homelab-dayandyou-staging
     network_mode: host
     restart: unless-stopped
@@ -117,7 +123,7 @@ services:
       - SITE_MODE
     mem_limit: 350m
   dayandyou-prod:
-    image: ghcr.io/${GHCR_OWNER:-ZenvoraAI}/dayandyou:release
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:release
     container_name: homelab-dayandyou-prod
     network_mode: host
     restart: unless-stopped
@@ -147,7 +153,7 @@ services:
       - SITE_MODE
     mem_limit: 400m
   memorial-api:
-    image: ghcr.io/${GHCR_OWNER:-ZenvoraAI}/aiqiuqi-memorial-api:${MEMORIAL_API_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-api:${MEMORIAL_API_TAG:-latest}
     container_name: homelab-memorial-api
     network_mode: host
     restart: unless-stopped
@@ -156,7 +162,7 @@ services:
       - /opt/secrets/aiqiuqi-memorial/api.env
     mem_limit: 192m
   memorial-worker:
-    image: ghcr.io/${GHCR_OWNER:-ZenvoraAI}/aiqiuqi-memorial-worker:${MEMORIAL_WORKER_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-worker:${MEMORIAL_WORKER_TAG:-latest}
     container_name: homelab-memorial-worker
     network_mode: host
     restart: unless-stopped
