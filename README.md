@@ -204,6 +204,7 @@ bash tests/verify-container-log-limits.sh    # every service bounds its log
 bash tests/verify-email-rate-limits.sh       # nginx limits + TRUST_PROXY reaches the container
 bash tests/verify-certbot-webroot.sh         # the webroot renewal path is intact
 bash tests/verify-memorial-credential-refresh.sh  # the refresh script refuses a bad value
+bash tests/verify-cloudflare-real-ip.sh      # the Cloudflare real-IP config exists and is well-formed
 ```
 
 `verify-container-log-limits.sh` asserts per service rather than grepping for
