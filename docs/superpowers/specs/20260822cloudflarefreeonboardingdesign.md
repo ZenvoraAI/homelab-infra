@@ -4,6 +4,17 @@ Date: 2026-08-22
 Status: revised after independent 3-agent review (security / architecture / scope
 completeness) of the first draft — see "Review history" at bottom
 
+**Rollout status as of 2026-08-25:**
+
+| Zone | Status |
+| --- | --- |
+| `valtou.com` | ✅ Done — `admin`/`api` proxied and fully verified; `api.family.valtou.com` deliberately kept DNS-only permanently (see note under Rollout order) |
+| `aiqiuqi.com` | ✅ Done — `api` proxied and fully verified |
+| `dayandyou.com` | ⬜ In progress — nameservers confirmed correct at the `.com` registry (`whois`, updated 2026-08-24T12:21:32Z) but not yet propagated to the resolvers checked; `staging` set to Proxied, not yet live; `dayandyou.com`/`www` still DNS-only per plan |
+
+See per-step notes under "Rollout order" and "Verification" below for what was
+actually found at each stage.
+
 ## Problem
 
 All five public products on the shared Lightsail box (`dayandyou.com` + staging,
@@ -273,34 +284,85 @@ lowest-consequence hostname of each zone rather than production traffic:
    `api.family.valtou.com`, then `api.valtou.com` (SecureVault) last within this zone —
    it has the most rate-limiting logic depending on correct real-IP handling, so it goes
    after confidence is established on its siblings.
+
+   **Done, with one deviation found during rollout.** Nameservers moved, `admin` and
+   `api` proxied and fully verified (see Verification status below). `api.family.valtou.com`
+   was **not** proxied and is not planned to be: it turned out to be a two-level
+   subdomain, and Cloudflare's free-tier Universal SSL only covers the root domain plus
+   one level of subdomain — proxying it produces an immediate, total TLS handshake
+   failure, confirmed live. Worse, `family-media`'s own docs
+   (`docs/media-cookie-auth-setup.md`) show this exact two-level shape was a *deliberate*
+   prior migration for cookie isolation (`MEDIA_COOKIE_DOMAIN=.family.valtou.com` keeps
+   its cookies from reaching sibling services like `admin.valtou.com`/`api.valtou.com`).
+   Renaming it to a one-level subdomain to dodge the cert limit would undo that isolation
+   — worse trade than just leaving this one host outside Cloudflare's WAF/DDoS layer.
+   It keeps its own nginx-level protections regardless (`family-api.conf`'s existing
+   `fam_general`/`fam_auth` zones), unaffected by any of this.
 2. **`aiqiuqi.com` zone.** Move nameservers, proxy `api.aiqiuqi.com`.
+
+   **Done.** Nameserver propagation took noticeably longer than `valtou.com`'s (GoDaddy
+   vs. Route53), otherwise no surprises. `api` proxied and fully verified.
 3. **`dayandyou.com` zone last.** Move nameservers. Proxy `staging.dayandyou.com`
    first, verify, then `dayandyou.com` + `www.dayandyou.com`.
+
+   **In progress.** DNS scan was clean on this zone — no surprise records like the
+   `portal`/apex-elsewhere ones found in `aiqiuqi.com`'s scan. The Stripe-webhook
+   Configuration Rule (see "Bot Fight Mode vs. Stripe webhooks" below) is live,
+   scoped to `/api/stripe-webhook`, skipping only Super Bot Fight Mode rules — not
+   the managed WAF ruleset. TLS is Full (strict) + minimum TLS 1.2. `staging` is set
+   to Proxied per plan; `dayandyou.com`/`www` are still DNS-only, waiting on `staging`
+   to actually go live before proxying them. Nameserver change confirmed correct at
+   the registry itself (`whois dayandyou.com` shows Cloudflare's nameservers, updated
+   2026-08-24T12:21:32Z) but propagation to the resolvers checked here is still
+   pending — almost certainly a stale cached NS TTL at those specific resolvers
+   (`valtou.com`, also on Route53, propagated within minutes; this one is past a day),
+   not a configuration problem.
 
 ## Verification (per hostname, after proxying it)
 
 - `curl -I https://<host>` — response should carry a `cf-ray` header, confirming it
   passed through Cloudflare.
+  **Done for `admin.valtou.com` and `api.aiqiuqi.com`** — both confirmed.
 - Re-run the existing host-side health checks from `README.md`
   (`curl -fsS http://127.0.0.1:<port>/...`) — unaffected by any of this, but confirms
   the container side wasn't disturbed by the nginx reload.
 - Tail `access.log` for a request made from a known IP (e.g. your own) and confirm
   `$remote_addr` shows that real IP, not a `173.245.`/`104.16.`-style Cloudflare range —
   confirms `real_ip_header` is working.
+  **Done for `admin.valtou.com` and `api.valtou.com`** — both confirmed via a live
+  request's IPv6 address, which matched neither host, correctly ruling out every
+  Cloudflare-published range.
 - Trigger the existing rate limiter deliberately (e.g. hit `/api/auth/password-reset`
   more than 5×/min from one IP) and confirm it still fires at the same threshold as
   before, from a single real IP — confirms rate limiting wasn't silently broken by the
   real-IP fix being wrong or absent.
+  **Done 2026-08-25 for all three proxied hosts, plus `dayandyou.com` ahead of its own
+  cutover:** `admin.valtou.com` (`admin_general`, burst 40 — 41 through, 19 rejected
+  `503`), `dayandyou.com` (`dayandyou_general`, burst 100 — 101 through, 29 rejected
+  `503`), `api.aiqiuqi.com` `/auth/` (`mem_auth`, burst 20 — 21 through, 14 rejected
+  `503`), `api.valtou.com` `/api/auth/password-reset` (`email_ep`, burst 3 — 4 through,
+  6 rejected with the custom `429` status, not the default `503`, confirming
+  `limit_req_status` is wired up too). All four fired exactly at their configured
+  burst thresholds.
 - `certbot renew --dry-run` for that hostname's certificate.
+  **Done for `admin.valtou.com`** (ran across all six domains at once, all succeeded).
+  Not yet re-run for `api.aiqiuqi.com` specifically since it went live.
 - For `dayandyou.com`/`www.dayandyou.com`/`staging.dayandyou.com` specifically: confirm
   SES mail sending (e.g. a real password-reset or order-confirmation email) still
   delivers, and send a real Stripe test webhook and confirm it reaches the app (see "Bot
   Fight Mode vs. Stripe webhooks" above) — do this before considering `dayandyou.com`
   done, not as an afterthought.
+  **Not done yet** — blocked on `staging.dayandyou.com` actually going live (nameserver
+  propagation still pending).
 - For `api.valtou.com` specifically: confirm WebSocket connectivity still works —
   `valtou-api.conf` hoists the same `Upgrade`/`Connection` header pattern
   `dayandyou.conf` uses, so it needs the same explicit post-cutover check, not just
   Day and You.
+  **Turned out not applicable, for either host.** Checked both `securevault-framework`
+  (behind `api.valtou.com`) and `day-and-you` (behind `dayandyou.com`) — neither has a
+  `ws`/`socket.io` dependency or any hand-rolled `.on('upgrade')` handler. Both vhosts'
+  `Upgrade`/`Connection: upgrade` headers are unused defensive boilerplate, not a live
+  feature. Nothing to verify here for either hostname.
 
 ## Rollback
 
