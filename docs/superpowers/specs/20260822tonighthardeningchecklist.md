@@ -204,7 +204,7 @@ sudo systemctl reload sshd
 wrong places first (from inside the host itself, targeting first its own private IP
 then its own public IP — neither tests anything real, since the host has never had
 reason to SSH to itself). Run correctly from the operator's own laptop against the
-real public IP (`REDACTED_IP`), it returned `Permission denied (publickey)` with the
+real public IP (redacted), it returned `Permission denied (publickey)` with the
 default identity. That's not proof key auth is broken — the test command didn't
 specify which key to offer, and this host may be reached day-to-day via a specific
 `-i <keyfile>` or an `~/.ssh/config` alias rather than a default identity. **Before
@@ -214,7 +214,7 @@ actually is, and verify *that* one works from a fresh terminal — only then app
 lock-out risk sitting open right now.
 
 Side note, not actionable: the host key's fingerprint is also associated with an old
-IP (`REDACTED_IP`) in the operator's `known_hosts`, confirming the box's public IP
+IP (redacted) in the operator's `known_hosts`, confirming the box's public IP
 has changed before — consistent with the Cloudflare spec's "IP is not static" framing
 and the deferred static-IP-cutover item in `aws-infrastructure`.
 
