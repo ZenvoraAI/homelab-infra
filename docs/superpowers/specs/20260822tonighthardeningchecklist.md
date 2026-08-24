@@ -327,6 +327,15 @@ both vhosts are unused defensive boilerplate, not a live feature.
 - **Postgres `pg_hba.conf` review** — depends on knowing the firewall result from step
   0 first (if the firewall already blocks 5432 from the world, this is lower urgency);
   do it as a quick follow-up once step 0's answer is in hand, not blindly tonight.
+  **Done 2026-08-25:** stock, unmodified Ubuntu default — every `host` line is scoped
+  to `127.0.0.1`/`::1` only, no `0.0.0.0/0` entry exists, and `listen_addresses` is
+  `localhost`, so Postgres has no listening socket on any external interface at all.
+  This is on top of, not instead of, the firewall being closed — three independent
+  layers (Lightsail firewall, `ufw`, Postgres itself not binding externally) all agree
+  5432 is unreachable from outside. The five databases sharing this one instance
+  (`dayandyou_prod`/`staging`, `family_media`, `memorial_site`, `securevault_db`) work
+  because every service container runs `network_mode: host`, so `127.0.0.1:5432` is
+  genuinely local from their point of view. Nothing to change here.
 - **Cloudflare rollout** — separate spec, separate night; don't rush it alongside SSH
   hardening in the same session, since both have their own "don't lock yourself out"
   failure modes and you want a clear head for each.
