@@ -1,7 +1,6 @@
 # homelab-infra
 
-Docker Compose orchestration for the shared Lightsail box
-(`ubuntu@ip-172-26-13-172`). This public repository contains only Compose,
+Docker Compose orchestration for the shared Lightsail box. This public repository contains only Compose,
 nginx configuration, and deploy-support scripts. It never contains runtime env
 files, certificates, database credentials, or GHCR tokens.
 
