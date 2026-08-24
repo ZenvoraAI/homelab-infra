@@ -5,6 +5,17 @@ Companion to `2026-08-22-cloudflare-free-onboarding-design.md` (already sent) �
 one covers the Cloudflare rollout; this one covers everything that doesn't depend on
 it and can be done tonight, host-by-host, independently.
 
+**Status as of 2026-08-24:**
+
+| Step | Status |
+| --- | --- |
+| 0. Firewall state | ⬜ Not done yet |
+| 1. 2FA everywhere | ✅ All four confirmed (AWS/Lightsail via Route53 login, GitHub, domain registrars — Route53/AWS for `valtou.com`/`dayandyou.com`, GoDaddy for `aiqiuqi.com` — and Cloudflare) |
+| 2. fail2ban | ✅ Done — see note below |
+| 3. unattended-upgrades | ✅ Already done, unrelated to this checklist — see note below |
+| 4. SSH hardening | ⬜ Blocked — see note below, sshd config untouched, nothing at risk overnight |
+| 5. nginx headers/rate limiting | ✅ Done and deployed — see note below for one correction made after deploy |
+
 Everything below is a command you run yourself on the Lightsail box (`ubuntu@<host>`)
 or in an account's web settings — I don't have SSH or console access to run any of
 this. Where a step touches `homelab-infra`'s nginx config, the exact diff is included
@@ -32,6 +43,10 @@ rules** (this is a UI action, no command for it). Confirm which ports are open t
 the world (e.g. 5432 for Postgres, or any of the app ports 3000-3003/3100/4000), that's
 the single most urgent thing to close, ahead of everything else on this list.
 
+**Status: not done yet.** This is the one remaining read-only step — just run the
+`ufw status verbose` command above and check the Lightsail console's Networking tab,
+then report back what ports are open.
+
 ---
 
 ## 1. Turn on 2FA everywhere (no commands, ~10 minutes total)
@@ -42,6 +57,14 @@ the single most urgent thing to close, ahead of everything else on this list.
 - Cloudflare account, once you create it for the other spec
 
 Zero risk, zero rollback needed. Just do it.
+
+**Status: done.** All four confirmed as of 2026-08-24 — AWS/Route53 (`valtou.com` +
+`dayandyou.com` nameservers live there), GoDaddy (`aiqiuqi.com`), Cloudflare, and
+GitHub. Worth knowing: `zenvora-admin`'s OAuth login doesn't just benefit from GitHub
+2FA being on, it *requires* it — the callback checks the logging-in account's 2FA
+status and refuses the session if it's off (`src/auth/oauth.ts`, tested in
+`tests/auth/oauth.test.ts:65-134`). So this account's GitHub 2FA was already a hard
+dependency before tonight, not just general hygiene.
 
 ---
 
@@ -75,6 +98,16 @@ repeated 401/403/404 bursts from one IP and ban those too, but that needs a cust
 filter written against this repo's actual log format — worth doing as a follow-up,
 not tonight.
 
+**Status: done.** Turned out fail2ban was already installed and running (since
+2026-08-10, predating this checklist) — but only via Ubuntu's stock
+`/etc/fail2ban/jail.d/defaults-debian.conf`, which just sets `[sshd] enabled = true`
+with no `jail.local` anywhere. Effective `bantime` was only 10 minutes (matched
+`findtime`/`maxretry` exactly, but 6x weaker than the 1h this checklist calls for).
+Created `jail.local` as above; `sshd` jail now confirmed running with `bantime=3600`.
+The sshd jail had already banned 13 IPs total before this change (real brute-force
+traffic, not hypothetical) — that history reset on restart, which is expected and
+harmless.
+
 ---
 
 ## 3. unattended-upgrades
@@ -98,6 +131,12 @@ Expect:
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 ```
+
+**Status: already done, unrelated to this checklist.** Both `apt-daily.timer` and
+`apt-daily-upgrade.timer` have been active since 2026-05-19 (three months before this
+checklist existed), and the log shows real daily runs — including an actual
+auto-removal of stale `linux-aws-6.8-*-1061` kernel packages on 2026-08-22. Nothing to
+do here.
 
 ---
 
@@ -146,6 +185,24 @@ revert:
 sudo rm /etc/ssh/sshd_config.d/99-hardening.conf
 sudo systemctl reload sshd
 ```
+
+**Status: blocked, nothing applied yet.** The key-auth check above was run from two
+wrong places first (from inside the host itself, targeting first its own private IP
+then its own public IP — neither tests anything real, since the host has never had
+reason to SSH to itself). Run correctly from the operator's own laptop against the
+real public IP (`REDACTED_IP`), it returned `Permission denied (publickey)` with the
+default identity. That's not proof key auth is broken — the test command didn't
+specify which key to offer, and this host may be reached day-to-day via a specific
+`-i <keyfile>` or an `~/.ssh/config` alias rather than a default identity. **Before
+retrying this step:** confirm what the normal, everyday connection command/config
+actually is, and verify *that* one works from a fresh terminal — only then apply the
+`sshd_config.d` change. `sshd_config` itself has not been touched, so there is no
+lock-out risk sitting open right now.
+
+Side note, not actionable: the host key's fingerprint is also associated with an old
+IP (`REDACTED_IP`) in the operator's `known_hosts`, confirming the box's public IP
+has changed before — consistent with the Cloudflare spec's "IP is not static" framing
+and the deferred static-IP-cutover item in `aws-infrastructure`.
 
 ---
 
@@ -218,6 +275,25 @@ curl -sI https://dayandyou.com | grep -i x-frame-options
 ```
 
 Both should show `X-Frame-Options: DENY`.
+
+**Status: done and deployed, with one correction.** `admin.valtou.com.conf` got the
+rate limit and all three headers exactly as above — clean, since `zenvora-admin` sets
+none of these itself. `dayandyou.conf` got the rate limit, but the `add_header` lines
+were reverted after deploy: `day-and-you`'s own `next.config.ts` already sends a more
+complete set (also `Permissions-Policy`, HSTS, CSP), and nginx's `add_header` only
+*appends* to upstream response headers rather than replacing them. The two together
+produced duplicate/conflicting headers on the wire — confirmed live, e.g. two
+different `Referrer-Policy` values in one response
+(`strict-origin-when-cross-origin, no-referrer`). `dayandyou.conf` now carries rate
+limiting only; the security headers stay app-owned. `tests/verify-admin-dayandyou-hardening.sh`
+asserts this split (headers required on `admin.valtou.com.conf`, `add_header` absent
+from `dayandyou.conf`) so it can't silently drift back.
+
+Also worth knowing: the "confirm WebSocket still works" caveat that appears for
+`api.valtou.com` in the Cloudflare spec doesn't apply to `dayandyou.com` either —
+neither `day-and-you` nor `securevault-framework` (behind `api.valtou.com`) actually
+implements WebSocket. The `Upgrade`/`Connection: upgrade` headers already present in
+both vhosts are unused defensive boilerplate, not a live feature.
 
 ---
 
