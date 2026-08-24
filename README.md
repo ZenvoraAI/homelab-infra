@@ -140,11 +140,13 @@ inode, so no amount of reloading will ever load a new `nginx.conf`:
 docker compose up -d --force-recreate nginx   # brief outage for every site
 ```
 
-This bites in a confusing way. On 2026-08-13 a correct `limit_req_zone` line was
-on disk and `nginx -t` still failed with `zero size shared memory zone
-"email_ep"` — conf.d (directory mount, fresh) referenced a zone that
-nginx.conf (single-file mount, stale) had not yet defined. The file was right;
-the mount was old. `docker compose run` validated the same config successfully.
+This bites in a confusing way: `conf.d` (directory mount, fresh) can reference
+a zone that `nginx.conf` (single-file mount, stale) hasn't defined yet, so
+`nginx -t` fails with a shared-memory-zone error even though the file on disk
+is correct — the mount is what's stale. `docker compose run` validates
+against the current files and will catch this before `exec` would. (Full
+incident writeup: private `aws-infrastructure` repo,
+`docs/homelab-infra-incidents.md`.)
 
 The running nginx keeps its loaded config until a reload succeeds, so an invalid
 file on disk breaks nothing. Validate, then recreate.
@@ -169,18 +171,17 @@ file on disk breaks nothing. Validate, then recreate.
 
 | Script | What it does |
 | --- | --- |
-| `docker-prune.sh` | Removes images no container references and older than 30 days. Deploys pin exact commit-SHA tags, so every deploy across every project leaves a tagged image behind for ever; unchecked, that fills the disk, which it did on 2026-08-12. The 30-day floor keeps a recent rollback target reachable. |
+| `docker-prune.sh` | Removes images no container references and older than 30 days. Deploys pin exact commit-SHA tags, so every deploy across every project leaves a tagged image behind for ever; unchecked, that fills the disk. The 30-day floor keeps a recent rollback target reachable. |
 | `refresh-memorial-aws-credentials.sh` | Pulls the memorial API and worker AWS credentials from SSM Parameter Store into their env files. |
 | `refresh-memorial-secrets.sh` | Pulls the CloudFront media signing key pair from SSM into the memorial API env file. |
 | `refresh-zenvora-admin-secrets.sh` | Pulls zenvora-admin's 13 secrets from SSM into its env file: GitHub App credentials, SES SMTP credentials, token-encryption key, whitelisted user ID, plus two separate PATs (a fine-grained alert-check PAT covering all ZenvoraAI-owned tracked repos, now that homelab-infra moved from qclawchang's personal account into the org, and a classic PAT for GHCR package listing since neither GitHub Apps nor fine-grained PATs expose an org-level Packages permission). Same pattern as the memorial scripts, for the same reason. |
 | `reload-nginx-after-cert-renewal.sh` | Certbot deploy hook; reloads the `nginx` container after a renewal. |
 
-The two refresh scripts exist because both memorial containers ran for weeks
-with the literal placeholder text from the setup notes as their
-`AWS_ACCESS_KEY_ID`. Every media upload failed and nothing said so — the admin
-UI had no upload entry point yet, so nobody exercised the path. Hand-copying a
-secret through a terminal is the failure mode (it is also what corrupted the
-CloudFront private key), so the scripts remove the hand.
+The two refresh scripts exist because hand-copying a secret through a
+terminal is a failure mode that can sit silently broken for a long time
+before anything notices — see the private `aws-infrastructure` repo,
+`docs/homelab-infra-incidents.md`, for what that cost once. The scripts
+remove the hand.
 
 Fetching from SSM only moves *where* a value is typed. The validation is the
 actual guard: each script refuses to write a value that is not shaped like the
@@ -214,9 +215,9 @@ the test instead of quietly growing an unbounded log.
 ## Container logs are bounded in two places
 
 Docker's `json-file` driver has no size limit by default, and a full disk takes
-down every site at once because they all share one box. The disk already filled
-on 2026-08-12 from image accumulation — `scripts/docker-prune.sh` handles that
-half; unbounded logs are the same failure by another route.
+down every site at once because they all share one box. `scripts/docker-prune.sh`
+handles the image-accumulation half of that; unbounded logs are the same
+failure by another route.
 
 | Where | Covers | Takes effect |
 | --- | --- | --- |
