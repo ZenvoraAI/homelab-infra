@@ -9,11 +9,11 @@ it and can be done tonight, host-by-host, independently.
 
 | Step | Status |
 | --- | --- |
-| 0. Firewall state | ⬜ Not done yet |
+| 0. Firewall state | ✅ Checked, and `ufw` now enabled too — see note below |
 | 1. 2FA everywhere | ✅ All four confirmed (AWS/Lightsail via Route53 login, GitHub, domain registrars — Route53/AWS for `valtou.com`/`dayandyou.com`, GoDaddy for `aiqiuqi.com` — and Cloudflare) |
 | 2. fail2ban | ✅ Done — see note below |
 | 3. unattended-upgrades | ✅ Already done, unrelated to this checklist — see note below |
-| 4. SSH hardening | ⬜ Blocked — see note below, sshd config untouched, nothing at risk overnight |
+| 4. SSH hardening | ✅ Done — see note below |
 | 5. nginx headers/rate limiting | ✅ Done and deployed — see note below for one correction made after deploy |
 
 Everything below is a command you run yourself on the Lightsail box (`ubuntu@<host>`)
@@ -43,9 +43,23 @@ rules** (this is a UI action, no command for it). Confirm which ports are open t
 the world (e.g. 5432 for Postgres, or any of the app ports 3000-3003/3100/4000), that's
 the single most urgent thing to close, ahead of everything else on this list.
 
-**Status: not done yet.** This is the one remaining read-only step — just run the
-`ufw status verbose` command above and check the Lightsail console's Networking tab,
-then report back what ports are open.
+**Status: checked, 2026-08-25.** `ufw status verbose` returned `inactive` — no
+OS-level filtering at all right now, so the Lightsail cloud firewall is the *only*
+line of defense at the network level. That firewall itself is clean: only `22` (SSH,
+including the Lightsail browser SSH channel), `80`, and `443` are open to
+`0.0.0.0/0` — no unexpected app ports (`3000-3003`/`3100`/`4000`) or database ports
+(`5432`) exposed. Nothing urgent to close. Turning `ufw` on is a separate decision
+(out of scope for this checklist — doing it without first mirroring the Lightsail
+rules risks a self-inflicted lockout) and isn't required before anything else here;
+noting it feeds forward into the deferred Postgres `pg_hba.conf` review and the
+later "restrict Lightsail firewall to Cloudflare-only IPs" follow-up.
+
+**2026-08-25 update: `ufw` is now active too**, mirroring the Lightsail rules exactly
+(`22`/`80`/`443` allowed, default deny incoming). Verified safe from a fresh
+connection on a separate machine before trusting it — network layer reached the SSH
+port fine (no lockout), confirming this repo's all-`network_mode: host` compose setup
+avoids the classic Docker-bypasses-ufw problem that bridge-mode port publishing would
+have hit.
 
 ---
 
@@ -203,6 +217,17 @@ Side note, not actionable: the host key's fingerprint is also associated with an
 IP (`REDACTED_IP`) in the operator's `known_hosts`, confirming the box's public IP
 has changed before — consistent with the Cloudflare spec's "IP is not static" framing
 and the deferred static-IP-cutover item in `aws-infrastructure`.
+
+**Resolved 2026-08-25.** The blocker dissolved once it turned out day-to-day access
+to this host is exclusively via Lightsail's browser-based SSH console (AWS-managed
+key auth), never a personal terminal client — so the earlier `Permission denied
+(publickey)` results from a laptop were irrelevant; that path was never in use.
+`PasswordAuthentication no` doesn't touch Lightsail's browser SSH (it isn't
+password-based), and login is always as `ubuntu`, never `root`, so `PermitRootLogin
+no` is likewise a no-op for the real access path. Applied
+`/etc/ssh/sshd_config.d/99-hardening.conf`, `sshd -t` clean, reloaded, and verified
+from a second, independent Lightsail browser SSH tab while the first stayed open —
+new session connected fine.
 
 ---
 
