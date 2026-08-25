@@ -10,7 +10,7 @@ completeness) of the first draft — see "Review history" at bottom
 | --- | --- |
 | `valtou.com` | ✅ Done — `admin`/`api` proxied and fully verified; `api.family.valtou.com` renamed to the one-level `family-api.valtou.com`, which is now also proxied and verified (see note under Rollout order); the old hostname stays live but not primary |
 | `aiqiuqi.com` | ✅ Done — `api` proxied and fully verified |
-| `dayandyou.com` | ⬜ In progress — nameservers confirmed correct at the `.com` registry (`whois`, updated 2026-08-24T12:21:32Z) but not yet propagated to the resolvers checked; `staging` set to Proxied, not yet live; `dayandyou.com`/`www` still DNS-only per plan |
+| `dayandyou.com` | 🟡 Nearly done — nameservers propagated 2026-08-25 (took ~2 days on Route53, unlike `valtou.com`'s near-instant one, cause unclear). `staging` and `dayandyou.com` (apex) proxied and fully verified. `www` is stuck: dashboard shows Proxied, but three independent authoritative queries plus a direct-IP-with-explicit-Host-header test all confirm it is NOT actually proxied — toggled off/on and deleted/recreated, neither fixed it. Left DNS-only (fully functional, just unprotected) until revisited. Stripe-webhook live test was explicitly skipped before proxying `dayandyou.com`/`www` — a deliberate, acknowledged-risk decision, not an oversight; still outstanding. |
 
 See per-step notes under "Rollout order" and "Verification" below for what was
 actually found at each stage.
