@@ -287,6 +287,31 @@ anything:
   — diff it against whatever the domain's current registrar/Route53 zone file has before
   switching nameservers.
 
+  **This risk was not hypothetical — confirmed as a real, multi-day outage on
+  2026-08-25.** `valtou.com`'s scan (unlike `aiqiuqi.com`'s and `dayandyou.com`'s,
+  which came back clean) both missed records entirely and captured others wrong:
+  `family.valtou.com` and `media-family.valtou.com` — real CloudFront-backed services,
+  confirmed live in Route53's own record list — never appeared in the scan at all, so
+  they resolved to `NXDOMAIN` from the moment `valtou.com`'s nameservers cut over.
+  Separately, `valtou.com` (apex), `www.valtou.com`, and `portal.valtou.com` — all
+  really CNAMEs to CloudFront distributions — got imported as frozen snapshots of
+  whatever A records those CNAMEs happened to resolve to *at scan time*, not the CNAME
+  relationships themselves. Those three kept working by accident (CloudFront's edge
+  IPs don't rotate fast), silently, for the same multi-day window, with no DNS
+  mechanism keeping them current — a single AWS-side IP rotation would have taken
+  them down with no warning and no way to explain why from this repo. All five were
+  found only because the operator happened to ask about one of them
+  (`media.family.valtou.com`, an unrelated near-miss name from `family-media`'s own
+  docs) days after the `valtou.com` cutover. Fixed by cross-referencing Route53's
+  authoritative record list directly and re-creating each as its real record type
+  (CNAME, not A) — see `family.valtou.com`, `media-family.valtou.com`,
+  `valtou.com`/`www.valtou.com`/`portal.valtou.com` in the zone's current DNS record
+  list. **Lesson for `dayandyou.com` and any future zone:** a clean-looking scan is not
+  sufficient confirmation — diff the full record list against Route53 (or the
+  registrar's own authoritative export) before trusting it, not just eyeballing it for
+  hostnames you already expect to see. A record type mismatch (CNAME imported as
+  frozen A records) is a failure mode Cloudflare's own UI gives no warning for.
+
 ## Rollout order
 
 Zone-level nameserver moves are the highest-blast-radius step (external, DNS-cached,
