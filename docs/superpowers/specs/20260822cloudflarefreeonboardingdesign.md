@@ -66,6 +66,23 @@ this repo found:
   it behaves today — worst for `admin.valtou.com` and `dayandyou.com`, which (confirmed
   in `conf.d/`) have no nginx-level rate limiting or security headers of their own
   either.
+
+  **Re-evaluated 2026-08-25: not just deferred, currently infeasible as scoped.**
+  This "immediate follow-up" framing assumed a firewall change could be scoped
+  independently of which hostnames are proxied. That assumption broke once rollout
+  confirmed `api.family.valtou.com` is **permanently** DNS-only (two-level-subdomain
+  cert limitation, see Rollout order below) — and it's called directly by browsers
+  (it sets `ALLOWED_ORIGINS`/CORS in `docker-compose.yml`, i.e. arbitrary visitor IPs,
+  not a fixed server-to-server caller set that could be allowlisted instead).
+  Every hostname here shares one nginx on one pair of ports (80/443); a Lightsail
+  firewall CIDR restriction acts on IP+port before nginx ever sees the `Host` header
+  or SNI, so it cannot be scoped per-hostname. Restricting 80/443 to Cloudflare's
+  ranges would permanently sever `api.family.valtou.com` for every visitor, not just
+  reduce its protection. Making this restriction viable would require giving that one
+  service its own port or its own host — an application-facing change (the CloudFront
+  frontend would need to call a non-standard port or a different origin), which is a
+  distinct project, not a firewall-rule change. Until that exists, this item stays a
+  non-goal, not a pending follow-up.
 - AWS WAF / CloudFront. Doesn't attach to a Lightsail instance directly (needs a
   CloudFront distribution or ALB in front), meaningfully more re-architecture and
   ongoing cost than Cloudflare for this single-box, direct-IP setup.
@@ -412,14 +429,19 @@ account.
   the origin IP anywhere instead of the hostname (would be unaffected by this change
   either way, but worth a quick grep of those apps' own repos since they're out of
   scope here).
-- The Lightsail-firewall-restriction follow-up (see revised Non-goals entry above) is
-  the natural, fairly urgent next step once this spec is stable — until it lands, every
-  proxied hostname's WAF/DDoS/Bot-Fight-Mode protection is bypassable by anyone who
-  connects to the origin IP directly with a correct `Host:` header. No spoofing or
-  header-forgery needed for that bypass; `set_real_ip_from` only trusts
-  `CF-Connecting-IP` from a TCP peer that's actually in Cloudflare's ranges, so a direct
-  connection doesn't get to claim a fake IP through this mechanism — it just doesn't get
-  filtered at all.
+- The Lightsail-firewall-restriction idea (see revised Non-goals entry above) is
+  **not currently actionable**, not just deferred: `api.family.valtou.com`'s permanent
+  DNS-only status plus every hostname sharing one nginx on 80/443 means it can't be
+  scoped to spare that service. Until either that service moves to its own port/host
+  or the org accepts severing it, every proxied hostname's WAF/DDoS/Bot-Fight-Mode
+  protection stays bypassable by anyone who connects to the origin IP directly with a
+  correct `Host:` header. No spoofing or header-forgery needed for that bypass;
+  `set_real_ip_from` only trusts `CF-Connecting-IP` from a TCP peer that's actually in
+  Cloudflare's ranges, so a direct connection doesn't get to claim a fake IP through
+  this mechanism — it just doesn't get filtered at all. The practical mitigation in
+  the meantime is hostname-level: give `admin.valtou.com` and `dayandyou.com` their own
+  nginx rate limiting and security headers (already flagged as missing, independent of
+  Cloudflare) so they're not relying on the edge layer alone.
 
 ## Review history
 
