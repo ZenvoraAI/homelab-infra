@@ -8,7 +8,7 @@ completeness) of the first draft — see "Review history" at bottom
 
 | Zone | Status |
 | --- | --- |
-| `valtou.com` | ✅ Done — `admin`/`api` proxied and fully verified; `api.family.valtou.com` deliberately kept DNS-only permanently (see note under Rollout order) |
+| `valtou.com` | ✅ Done — `admin`/`api` proxied and fully verified; `api.family.valtou.com` renamed to the one-level `family-api.valtou.com`, which is now also proxied and verified (see note under Rollout order); the old hostname stays live but not primary |
 | `aiqiuqi.com` | ✅ Done — `api` proxied and fully verified |
 | `dayandyou.com` | ⬜ In progress — nameservers confirmed correct at the `.com` registry (`whois`, updated 2026-08-24T12:21:32Z) but not yet propagated to the resolvers checked; `staging` set to Proxied, not yet live; `dayandyou.com`/`www` still DNS-only per plan |
 
@@ -302,19 +302,37 @@ lowest-consequence hostname of each zone rather than production traffic:
    it has the most rate-limiting logic depending on correct real-IP handling, so it goes
    after confidence is established on its siblings.
 
-   **Done, with one deviation found during rollout.** Nameservers moved, `admin` and
-   `api` proxied and fully verified (see Verification status below). `api.family.valtou.com`
-   was **not** proxied and is not planned to be: it turned out to be a two-level
-   subdomain, and Cloudflare's free-tier Universal SSL only covers the root domain plus
-   one level of subdomain — proxying it produces an immediate, total TLS handshake
-   failure, confirmed live. Worse, `family-media`'s own docs
-   (`docs/media-cookie-auth-setup.md`) show this exact two-level shape was a *deliberate*
-   prior migration for cookie isolation (`MEDIA_COOKIE_DOMAIN=.family.valtou.com` keeps
-   its cookies from reaching sibling services like `admin.valtou.com`/`api.valtou.com`).
-   Renaming it to a one-level subdomain to dodge the cert limit would undo that isolation
-   — worse trade than just leaving this one host outside Cloudflare's WAF/DDoS layer.
-   It keeps its own nginx-level protections regardless (`family-api.conf`'s existing
-   `fam_general`/`fam_auth` zones), unaffected by any of this.
+   **Done, with one deviation found during rollout, since superseded.** Nameservers
+   moved, `admin` and `api` proxied and fully verified (see Verification status below).
+   `api.family.valtou.com` was initially left unproxied: it's a two-level subdomain, and
+   Cloudflare's free-tier Universal SSL only covers the root domain plus one level of
+   subdomain — proxying it produces an immediate, total TLS handshake failure, confirmed
+   live. The first read was that this was a hard blocker, because `family-media`'s docs
+   (`docs/media-cookie-auth-setup.md`) describe this exact two-level shape as a
+   *deliberate* prior migration for cookie isolation
+   (`MEDIA_COOKIE_DOMAIN=.family.valtou.com`).
+
+   **Re-investigated 2026-08-25 and reversed:** that migration turned out not to be
+   live. The same doc has a 2026-07-01 banner — "Cookie 模式暂缓，需先做子域隔离" (cookie
+   mode deferred, subdomain isolation needed first) — the cookie-issuing code path is
+   dead (`clearMediaCookieOptions`' own comment confirms media auth moved to
+   short-lived signed URLs, so these cookies are "never issued"), and the real session
+   cookies use a separate, narrower `COOKIE_DOMAIN` variable that defaults to
+   host-only. Renaming didn't cost anything live. Added `family-api.valtou.com` as a
+   new one-level hostname alongside the old one (same backend, same `fam_general`/
+   `fam_auth` rate-limit zones, own Let's Encrypt cert via `certbot certonly --webroot`),
+   proxied it through Cloudflare, and fully verified (cf-ray, real-IP, rate limiter all
+   confirmed). `family-media`'s `API_PUBLIC_URL` now points at the new hostname (host
+   `.env` updated and the `api`/`family-api` container restarted to pick it up; the
+   `deploy-api.yml` CI workflow's `grep -Fx "API_PUBLIC_URL=$API_ORIGIN"` consistency
+   check meant `PRODUCTION_API_ORIGIN` — and `API_ORIGIN`, since this service has no
+   staging target — needed updating in the repo's GitHub Actions secrets too, or the
+   next deploy would have failed that check). `api.family.valtou.com` itself is kept
+   running deliberately, not retired outright: DNS, nginx vhost, and cert all still
+   live and serving, just no longer the hostname anything is told to use — a safety net
+   against any external caller not found in this repo's own inventory (a published
+   mobile build, a saved bookmark, etc.), reversible to fully decommission later once
+   confidence is higher that nothing still depends on it.
 2. **`aiqiuqi.com` zone.** Move nameservers, proxy `api.aiqiuqi.com`.
 
    **Done.** Nameserver propagation took noticeably longer than `valtou.com`'s (GoDaddy
