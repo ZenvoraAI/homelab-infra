@@ -124,9 +124,10 @@ services:
       # Staging-only HTTP Basic shield. Absent from dayandyou-prod on
       # purpose: the app treats an unset value as "no gate".
       - SITE_PASSWORD
-      # Read by POST /api/internal/sweep-reservations. Without it that
-      # route fails closed (503) and expired stock reservations are only
-      # reclaimed by an incoming checkout, so a quiet store stays sold out.
+      # Enables the FORCED-sweep endpoint POST /api/internal/sweep-
+      # reservations only. Expired stock reservations are already reclaimed
+      # by an in-process timer every 5 minutes (instrumentation-node.ts),
+      # so this is an ops convenience, not a dependency.
       - CRON_SECRET
     mem_limit: 350m
   dayandyou-prod:
@@ -158,9 +159,10 @@ services:
       - ADMIN_EMAIL
       - NEXT_PUBLIC_APP_URL
       - SITE_MODE
-      # Read by POST /api/internal/sweep-reservations. Without it that
-      # route fails closed (503) and expired stock reservations are only
-      # reclaimed by an incoming checkout, so a quiet store stays sold out.
+      # Enables the FORCED-sweep endpoint POST /api/internal/sweep-
+      # reservations only. Expired stock reservations are already reclaimed
+      # by an in-process timer every 5 minutes (instrumentation-node.ts),
+      # so this is an ops convenience, not a dependency.
       - CRON_SECRET
     mem_limit: 400m
   memorial-api:
