@@ -184,7 +184,7 @@ services:
       - /opt/secrets/aiqiuqi-memorial/worker.env
     mem_limit: 384m
   # CONTAINERS=1 permits the whole /containers/* GET surface in this proxy image
-  # (list/inspect, but also logs/top/export/archive across all 7 containers on
+  # (list/inspect, but also logs/top/export/archive across all containers on
   # the host), not just the /containers/json listing zenvora-admin's own code
   # calls — there is no finer-grained flag in tecnativa/docker-socket-proxy to
   # restrict this further, and a bespoke allow-list reverse-proxy in front of a
@@ -193,6 +193,15 @@ services:
   # uploads, no arbitrary command execution paths, one unauthenticated route
   # pair for the OAuth callback) — written down explicitly so it's a known,
   # chosen tradeoff rather than an oversight.
+  #
+  # Not published to the host at all (no `ports:`): every other service here
+  # uses network_mode: host, which puts them all on the host's own network
+  # stack, so a port merely bound to 127.0.0.1 is reachable from every one of
+  # them, not just zenvora-admin -- a compromise of the lowest-trust container
+  # on the box (e.g. a public storefront) could otherwise reach this proxy and
+  # inspect every sibling container's env vars, i.e. read out every secret on
+  # the host. Reachable only via the private `docker-proxy-net` bridge network
+  # below, shared with nothing except zenvora-admin.
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3
     container_name: homelab-docker-socket-proxy
@@ -209,15 +218,24 @@ services:
       - INFO=0
       - NETWORKS=0
       - VOLUMES=0
-    ports:
-      - "127.0.0.1:2375:2375"
+    networks:
+      - docker-proxy-net
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     mem_limit: 16m
   zenvora-admin:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/zenvora-admin:${ZENVORA_ADMIN_TAG:-latest}
     container_name: homelab-zenvora-admin
-    network_mode: host
+    # Not network_mode: host, unlike every other app here -- this is the one
+    # service that talks to docker-socket-proxy, and that proxy must not be
+    # reachable from the other host-network containers (see the comment on
+    # docker-socket-proxy above). Joins the private docker-proxy-net bridge to
+    # reach it, plus a loopback-only port publish below so nginx (still
+    # host-network) can still reach this container exactly as before.
+    networks:
+      - docker-proxy-net
+    ports:
+      - "127.0.0.1:3100:3100"
     restart: unless-stopped
     logging: *default-logging
     depends_on:
@@ -231,8 +249,20 @@ services:
     # the shell level, that bare passthrough would silently blank it to an
     # empty string rather than falling back to whatever env_file set, which
     # would make Bun try to listen on port 0. One file, one source of truth.
+    #
+    # DOCKER_PROXY_URL in that env_file must be updated on the host, by hand,
+    # from http://127.0.0.1:2375 to http://docker-socket-proxy:2375 -- Compose's
+    # embedded DNS resolves the service name on docker-proxy-net now that the
+    # proxy is no longer on the host's loopback. This repo change alone does
+    # nothing until that host-side edit and a
+    # `docker compose up -d --force-recreate docker-socket-proxy zenvora-admin`
+    # both happen.
     env_file:
       - /opt/secrets/zenvora-admin/.env
     volumes:
       - /opt/data/zenvora-admin:/app/data
     mem_limit: 128m
+
+networks:
+  docker-proxy-net:
+    driver: bridge

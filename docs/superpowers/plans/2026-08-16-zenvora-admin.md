@@ -3478,6 +3478,8 @@ Task 21 is done and the app is live at `https://admin.valtou.com`, but real-worl
 
 `ALERT_CHECK_TOKEN` was specified as one PAT covering all 6 repos. It can't: a fine-grained PAT's "Repository access" list is scoped to one Resource Owner (a personal account, or one org) — never both. `homelab-infra` is personal, the other 5 repos are `ZenvoraAI`-owned. Split into `ALERT_CHECK_TOKEN` (ZenvoraAI, 5 repos) and `ALERT_CHECK_TOKEN_PERSONAL` (personal, `homelab-infra` only) — both need Actions + Dependabot alerts + **Secrets** (the same Secrets-permission gap as above bit this PAT too, on the first attempt).
 
+**Retired 2026-08-15.** Once `homelab-infra` moved from the personal account into the ZenvoraAI org, the split this paragraph describes no longer applied — all 6 repos share one Resource Owner again, so `ALERT_CHECK_TOKEN_PERSONAL` was dropped from `scripts/refresh-zenvora-admin-secrets.sh` and its SSM parameter. Current secret count and script both reflect `ALERT_CHECK_TOKEN` only; see `README.md`.
+
 ### Secrets management: SSM, not a hand-typed `.env`
 
 Step 5's original `sudo vi` instruction is superseded — see the note inline at that step. The final secret count is 14 (not the dozen originally envisioned), split across `TOKEN_ENCRYPTION_KEY`, `WHITELISTED_GITHUB_USER_ID`, `GITHUB_APP_CLIENT_ID`/`_SECRET`, `ALERT_CHECK_TOKEN`/`_PERSONAL`, `GHCR_READ_TOKEN`, and six `SMTP_*`/`ALERT_EMAIL_*` values for SES. All live in AWS SSM Parameter Store under `/zenvora-admin/prod/*`, readable only by a dedicated `zenvora-admin-ssm` IAM user scoped to that one path, pulled onto the host by `scripts/refresh-zenvora-admin-secrets.sh` (new script, same pattern as the pre-existing memorial-secrets scripts).

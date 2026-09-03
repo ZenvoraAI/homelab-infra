@@ -72,8 +72,10 @@ this repo found:
   independently of which hostnames are proxied. That assumption broke once rollout
   confirmed `api.family.valtou.com` is **permanently** DNS-only (two-level-subdomain
   cert limitation, see Rollout order below) — and it's called directly by browsers
-  (it sets `ALLOWED_ORIGINS`/CORS in `docker-compose.yml`, i.e. arbitrary visitor IPs,
-  not a fixed server-to-server caller set that could be allowlisted instead).
+  (it sets `ALLOWED_ORIGINS`/CORS in its own env file, not `docker-compose.yml` --
+  the `api` service has no `environment:` block at all, everything lives in the
+  untracked `/opt/secrets/family-media/.env` bind mount -- i.e. arbitrary visitor
+  IPs, not a fixed server-to-server caller set that could be allowlisted instead).
   Every hostname here shares one nginx on one pair of ports (80/443); a Lightsail
   firewall CIDR restriction acts on IP+port before nginx ever sees the `Host` header
   or SNI, so it cannot be scoped per-hostname. Restricting 80/443 to Cloudflare's

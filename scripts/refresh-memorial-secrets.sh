@@ -6,6 +6,8 @@ set -eu
 # be hand-copied through a terminal again (that's what corrupted it before).
 # Never echoes the fetched values.
 
+. "$(dirname -- "$0")/lib/secret-file-lib.sh"
+
 ENV_FILE=/opt/secrets/aiqiuqi-memorial/api.env
 PARAM_PREFIX=/aiqiuqi-memorial/preview
 PROFILE=${AWS_PROFILE:-memorial-ssm}
@@ -15,7 +17,7 @@ test -f "$ENV_FILE" || { echo "refresh-memorial-secrets: $ENV_FILE not found" >&
 # Preserve the original owner: this script runs via sudo, and docker compose
 # (which reads this file) does not, so a root-owned rewrite would lock
 # compose out of a file it could read a moment ago.
-ORIG_OWNER=$(stat -c '%u:%g' "$ENV_FILE")
+ORIG_OWNER=$(secretlib_orig_owner "$ENV_FILE")
 
 KEY_PAIR_ID=$(aws ssm get-parameter --profile "$PROFILE" \
   --name "$PARAM_PREFIX/CLOUDFRONT_MEDIA_KEY_PAIR_ID" \
@@ -30,17 +32,10 @@ case "$PRIVATE_KEY" in
   *) echo "refresh-memorial-secrets: fetched private key doesn't look like a PEM (missing BEGIN/END) -- aborting, $ENV_FILE not touched" >&2; exit 1 ;;
 esac
 
-# Keep only the most recent backup before adding today's: an exposed private
-# key must actually stop existing on disk once rotated, not just stop being
-# trusted by CloudFront (that only affects future signature validation).
-for old in $(ls -t "$ENV_FILE".bak-* 2>/dev/null | tail -n +2); do
-  rm -f "$old"
-done
-
-BACKUP="$ENV_FILE.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-cp "$ENV_FILE" "$BACKUP"
-chown "$ORIG_OWNER" "$BACKUP"
-chmod 600 "$BACKUP"
+# An exposed private key must actually stop existing on disk once rotated,
+# not just stop being trusted by CloudFront (that only affects future
+# signature validation) -- keeps exactly one backup.
+BACKUP=$(secretlib_rotate_backup "$ENV_FILE" "$ORIG_OWNER")
 
 TMP=$(mktemp)
 # A previously-corrupted private key can span multiple physical lines (a
@@ -65,8 +60,6 @@ awk '
   } > "$ENV_FILE.new"
 )
 rm -f "$TMP"
-mv "$ENV_FILE.new" "$ENV_FILE"
-chown "$ORIG_OWNER" "$ENV_FILE"
-chmod 600 "$ENV_FILE"
+secretlib_finalize "$ENV_FILE" "$ORIG_OWNER"
 
 echo "refresh-memorial-secrets: updated CLOUDFRONT_MEDIA_KEY_PAIR_ID and CLOUDFRONT_MEDIA_PRIVATE_KEY in $ENV_FILE (backup: $BACKUP)"

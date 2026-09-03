@@ -16,7 +16,7 @@ require docker-compose.yml '/var/lib/homelab-acme:/var/www/certbot:ro'
 require docker-compose.yml '/opt/secrets/family-media/.env:/app/.env:ro'
 require nginx/nginx.conf 'ssl_protocols TLSv1.2 TLSv1.3;'
 
-for file in nginx/conf.d/family-api.conf nginx/conf.d/valtou-api.conf nginx/conf.d/dayandyou.conf; do
+for file in nginx/conf.d/family-api.conf nginx/conf.d/valtou-api.conf nginx/conf.d/dayandyou.conf nginx/conf.d/admin.valtou.com.conf nginx/conf.d/api.aiqiuqi.com.conf; do
   require "$file" 'location ^~ /.well-known/acme-challenge/'
   require "$file" 'root /var/www/certbot;'
   require "$file" 'try_files $uri =404;'

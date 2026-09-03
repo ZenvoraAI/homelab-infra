@@ -26,6 +26,8 @@ set -eu
 # The recreate is not optional: docker compose reads env_file at container
 # creation, so an updated file changes nothing until the container is replaced.
 
+. "$(dirname -- "$0")/lib/secret-file-lib.sh"
+
 SECRETS_DIR=${SECRETS_DIR:-/opt/secrets/aiqiuqi-memorial}
 PARAM_PREFIX=${PARAM_PREFIX:-/aiqiuqi-memorial/preview}
 PROFILE=${AWS_PROFILE:-memorial-ssm}
@@ -109,17 +111,11 @@ for target in $TARGETS; do
   # This script runs under sudo; docker compose, which reads the file, does not.
   # A root-owned rewrite would lock compose out of a file it could read a moment
   # ago -- the same trap refresh-memorial-secrets.sh documents.
-  orig_owner=$(stat -c '%u:%g' "$env_file")
+  orig_owner=$(secretlib_orig_owner "$env_file")
 
-  # Keep one previous copy only. A rotated credential should stop existing on
-  # disk, not accumulate in backups next to the file that replaced it.
-  for old in $(ls -t "$env_file".bak-* 2>/dev/null | tail -n +2); do
-    rm -f "$old"
-  done
-  backup="$env_file.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-  cp "$env_file" "$backup"
-  chown "$orig_owner" "$backup"
-  chmod 600 "$backup"
+  # A rotated credential should stop existing on disk, not accumulate in
+  # backups next to the file that replaced it -- keeps exactly one.
+  backup=$(secretlib_rotate_backup "$env_file" "$orig_owner")
 
   tmp=$(mktemp)
   grep -v -E '^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)=' "$env_file" > "$tmp" || true
@@ -132,9 +128,7 @@ for target in $TARGETS; do
     } > "$env_file.new"
   )
   rm -f "$tmp"
-  mv "$env_file.new" "$env_file"
-  chown "$orig_owner" "$env_file"
-  chmod 600 "$env_file"
+  secretlib_finalize "$env_file" "$orig_owner"
 
   echo "refresh-memorial-aws-credentials: $env_file updated (key ...${key_id#????????????????}, backup: $backup)"
 done
