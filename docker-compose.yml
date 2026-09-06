@@ -236,6 +236,16 @@ services:
       - docker-proxy-net
     ports:
       - "127.0.0.1:3100:3100"
+    # This move off host networking also cut the *other* direction this
+    # service needs: its own origin/certificate probe of nginx, which still
+    # binds 127.0.0.1 (see NGINX_ORIGIN_HOST below) -- a loopback address
+    # that, from inside this bridge network, no longer refers to the host.
+    # nginx's vhosts listen on bare `listen 80;`/`listen 443 ssl;` (all
+    # interfaces, required for Cloudflare to reach them), so the host's real
+    # address works; host.docker.internal is Compose's portable name for it
+    # rather than hardcoding docker-proxy-net's gateway IP.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     logging: *default-logging
     depends_on:
@@ -250,13 +260,15 @@ services:
     # empty string rather than falling back to whatever env_file set, which
     # would make Bun try to listen on port 0. One file, one source of truth.
     #
-    # DOCKER_PROXY_URL in that env_file must be updated on the host, by hand,
-    # from http://127.0.0.1:2375 to http://docker-socket-proxy:2375 -- Compose's
-    # embedded DNS resolves the service name on docker-proxy-net now that the
-    # proxy is no longer on the host's loopback. This repo change alone does
-    # nothing until that host-side edit and a
+    # Two values in that env_file must be updated on the host, by hand:
+    # DOCKER_PROXY_URL from http://127.0.0.1:2375 to
+    # http://docker-socket-proxy:2375 -- Compose's embedded DNS resolves the
+    # service name on docker-proxy-net now that the proxy is no longer on the
+    # host's loopback -- and NGINX_ORIGIN_HOST from 127.0.0.1 to
+    # host.docker.internal, per the extra_hosts comment above. This repo
+    # change alone does nothing until both host-side edits and a
     # `docker compose up -d --force-recreate docker-socket-proxy zenvora-admin`
-    # both happen.
+    # all happen.
     env_file:
       - /opt/secrets/zenvora-admin/.env
     volumes:
