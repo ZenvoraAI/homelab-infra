@@ -74,8 +74,15 @@ services:
       # 2026-08-13 by comparing the workflow's exports against this list.
       - TRUST_PROXY
       - JWT_SECRET
-      - TOTP_ENCRYPTION_KEY
       - INHERITANCE_HINT_SECRET
+      # WebAuthn relying party. The API exits at startup without both
+      # (services/webauthn/rpConfig.js) — a credential minted under the wrong
+      # RP ID is permanently unusable, so refusing to boot is deliberate.
+      # Declared here for the same reason TRUST_PROXY above had to be: the
+      # deploy workflow exports them, but compose only forwards names on this
+      # list, so an export alone never reaches the container.
+      - WEBAUTHN_RP_ID
+      - WEBAUTHN_ORIGINS
       - ALLOWED_ORIGINS
       - DATABASE_URL
       - GOOGLE_CLIENT_ID
