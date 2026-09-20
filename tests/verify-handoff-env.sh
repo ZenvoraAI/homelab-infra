@@ -27,12 +27,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FM_DOC="$ROOT/../family-media/apps/api/.env.example"
 MEMORIAL_DOC="$ROOT/../aiqiuqi-memorial/.env.example"
 
+# family-media's API only needs the signing material now: the handoff target
+# and audience come from the per-person MemorialPerson row, so
+# MEMORIAL_HANDOFF_BASE_URL / MEMORIAL_HANDOFF_AUDIENCE / MEMORIAL_WEB_ORIGIN
+# are no longer read by the API or documented in its .env.example.
+# refresh-family-media-secrets.sh deliberately still fetches and writes them
+# so the previous API image can be rolled back to; that is not this test's
+# concern (it only checks .env.example).
 FM_EXPECTED=(
   FM_HANDOFF_PRIVATE_KEY_PEM
   FM_HANDOFF_KEY_ID
-  MEMORIAL_HANDOFF_BASE_URL
-  MEMORIAL_HANDOFF_AUDIENCE
-  MEMORIAL_WEB_ORIGIN
 )
 
 MEMORIAL_EXPECTED=(
@@ -49,7 +53,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # Anchor both files BEFORE running any grep, so a missing path produces
 # a clear FAIL instead of a cascade of grep "No such file" errors that
 # don't name the wrong path.
-[ -f "$FM_DOC" ] || fail "$FM_DOC not found (family-media .env.example must document the 5 handoff vars)"
+[ -f "$FM_DOC" ] || fail "$FM_DOC not found (family-media .env.example must document the 2 handoff vars)"
 [ -f "$MEMORIAL_DOC" ] || fail "$MEMORIAL_DOC not found (memorial .env.example must document the 6 handoff vars)"
 
 # check_vars <file> <var...> — every var must appear at the start of a
@@ -66,4 +70,4 @@ check_vars() {
 check_vars "$FM_DOC" "${FM_EXPECTED[@]}"
 check_vars "$MEMORIAL_DOC" "${MEMORIAL_EXPECTED[@]}"
 
-echo "PASS: handoff env vars documented (5 family-media, 6 memorial)"
+echo "PASS: handoff env vars documented (2 family-media, 6 memorial)"
