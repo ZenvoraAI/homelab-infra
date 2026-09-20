@@ -25,41 +25,14 @@ FM_HANDOFF_PRIVATE_KEY_PEM=$(aws ssm get-parameter --profile "$PROFILE" --with-d
 FM_HANDOFF_KEY_ID=$(aws ssm get-parameter --profile "$PROFILE" \
   --name "$PARAM_PREFIX/FM_HANDOFF_KEY_ID" \
   --query Parameter.Value --output text)
-MEMORIAL_HANDOFF_BASE_URL=$(aws ssm get-parameter --profile "$PROFILE" \
-  --name "$PARAM_PREFIX/MEMORIAL_HANDOFF_BASE_URL" \
-  --query Parameter.Value --output text)
-MEMORIAL_HANDOFF_AUDIENCE=$(aws ssm get-parameter --profile "$PROFILE" \
-  --name "$PARAM_PREFIX/MEMORIAL_HANDOFF_AUDIENCE" \
-  --query Parameter.Value --output text)
-MEMORIAL_WEB_ORIGIN=$(aws ssm get-parameter --profile "$PROFILE" \
-  --name "$PARAM_PREFIX/MEMORIAL_WEB_ORIGIN" \
-  --query Parameter.Value --output text)
 
 # --- Strict validation: any failure exits 1, writes no secret material,
 # and leaves $ENV_FILE untouched (we haven't created .new yet).
 test -n "$FM_HANDOFF_KEY_ID" || { echo "refresh-family-media-secrets: empty FM_HANDOFF_KEY_ID from SSM -- aborting, $ENV_FILE not touched" >&2; exit 1; }
-test -n "$MEMORIAL_HANDOFF_AUDIENCE" || { echo "refresh-family-media-secrets: empty MEMORIAL_HANDOFF_AUDIENCE from SSM -- aborting, $ENV_FILE not touched" >&2; exit 1; }
-test -n "$MEMORIAL_HANDOFF_BASE_URL" || { echo "refresh-family-media-secrets: empty MEMORIAL_HANDOFF_BASE_URL from SSM -- aborting, $ENV_FILE not touched" >&2; exit 1; }
-test -n "$MEMORIAL_WEB_ORIGIN" || { echo "refresh-family-media-secrets: empty MEMORIAL_WEB_ORIGIN from SSM -- aborting, $ENV_FILE not touched" >&2; exit 1; }
 
 case "$FM_HANDOFF_PRIVATE_KEY_PEM" in
   *"-----BEGIN"*"PRIVATE KEY"*"-----END"*) ;;
   *) echo "refresh-family-media-secrets: fetched FM_HANDOFF_PRIVATE_KEY_PEM doesn't look like a PEM (missing BEGIN/PRIVATE KEY/END) -- aborting, $ENV_FILE not touched" >&2; exit 1 ;;
-esac
-
-# Both URLs must be http(s) only — anything else (javascript:, file://,
-# data:, plain garbage) would either let memorial redirect the JWT to a
-# hostile host or break the handoff POST origin check. http:// is allowed
-# for the family->memorial callback because the in-cluster target may be
-# plain http behind a TLS-terminating proxy; the public MEMORIAL_WEB_ORIGIN
-# is https in practice but the validator does not pin that.
-case "$MEMORIAL_HANDOFF_BASE_URL" in
-  https://*|http://*) ;;
-  *) echo "refresh-family-media-secrets: MEMORIAL_HANDOFF_BASE_URL must start with https:// or http:// -- aborting, $ENV_FILE not touched" >&2; exit 1 ;;
-esac
-case "$MEMORIAL_WEB_ORIGIN" in
-  https://*|http://*) ;;
-  *) echo "refresh-family-media-secrets: MEMORIAL_WEB_ORIGIN must start with https:// or http:// -- aborting, $ENV_FILE not touched" >&2; exit 1 ;;
 esac
 
 # An exposed private key must actually stop existing on disk once rotated,
@@ -79,6 +52,9 @@ awk '
   /^FM_HANDOFF_PRIVATE_KEY_PEM=/ { skipping = 1 }
   skipping { if ($0 ~ /-----END.*PRIVATE KEY-----/) skipping = 0; next }
   /^FM_HANDOFF_KEY_ID=/ { next }
+  # Retired single-site vars: the API no longer reads them (the handoff target
+  # and audience come from the MemorialPerson row). Strip any leftover lines so
+  # a stale value cannot linger in the env file; nothing writes them back.
   /^MEMORIAL_HANDOFF_BASE_URL=/ { next }
   /^MEMORIAL_HANDOFF_AUDIENCE=/ { next }
   /^MEMORIAL_WEB_ORIGIN=/ { next }
@@ -90,12 +66,9 @@ awk '
     cat "$TMP"
     printf 'FM_HANDOFF_KEY_ID=%s\n' "$FM_HANDOFF_KEY_ID"
     printf 'FM_HANDOFF_PRIVATE_KEY_PEM=%s\n' "$FM_HANDOFF_PRIVATE_KEY_PEM"
-    printf 'MEMORIAL_HANDOFF_BASE_URL=%s\n' "$MEMORIAL_HANDOFF_BASE_URL"
-    printf 'MEMORIAL_HANDOFF_AUDIENCE=%s\n' "$MEMORIAL_HANDOFF_AUDIENCE"
-    printf 'MEMORIAL_WEB_ORIGIN=%s\n' "$MEMORIAL_WEB_ORIGIN"
   } > "$ENV_FILE.new"
 )
 rm -f "$TMP"
 secretlib_finalize "$ENV_FILE" "$ORIG_OWNER"
 
-echo "refresh-family-media-secrets: updated 5 handoff vars in $ENV_FILE (backup: $BACKUP)"
+echo "refresh-family-media-secrets: updated 2 handoff vars in $ENV_FILE (backup: $BACKUP)"
