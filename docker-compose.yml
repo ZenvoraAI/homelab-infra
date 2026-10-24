@@ -189,7 +189,7 @@ services:
     logging: *default-logging
     env_file:
       - /opt/secrets/aiqiuqi-memorial/worker.env
-    mem_limit: 384m
+    mem_limit: 512m
   # CONTAINERS=1 permits the whole /containers/* GET surface in this proxy image
   # (list/inspect, but also logs/top/export/archive across all containers on
   # the host), not just the /containers/json listing zenvora-admin's own code

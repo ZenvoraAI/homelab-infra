@@ -17,7 +17,7 @@ release workflows remain in their own repositories.
 | `dayandyou-prod` | `homelab-dayandyou-prod` | 3003 | `dayandyou.com`, `www.dayandyou.com` | 400m |
 | `dayandyou-staging` | `homelab-dayandyou-staging` | 3002 | `staging.dayandyou.com` | 350m |
 | `memorial-api` | `homelab-memorial-api` | 3001 | `api.aiqiuqi.com` | 192m |
-| `memorial-worker` | `homelab-memorial-worker` | — | none (no listener) | 384m |
+| `memorial-worker` | `homelab-memorial-worker` | — | none (no listener) | 512m |
 | `docker-socket-proxy` | `homelab-docker-socket-proxy` | none (private network only) | none | 16m |
 | `zenvora-admin` | `homelab-zenvora-admin` | 3100 (loopback) | `admin.valtou.com` | 128m |
 
@@ -37,8 +37,8 @@ public internet. Docker nginx is the only public reverse proxy.
 `memorial-worker` is the one service with no port and no vhost — it processes
 media out of band.
 
-Those limits sum to 2430 MiB on a host measured at 1.9 GiB, so the box is
-deliberately oversubscribed by roughly 18%. A `mem_limit` is a ceiling, not a
+Those limits sum to 2558 MiB on a host measured at 1.9 GiB, so the box is
+deliberately oversubscribed by roughly 31%. A `mem_limit` is a ceiling, not a
 reservation, and no service sits near its own ceiling — but the arithmetic means
 several services peaking together is an OOM, not a slowdown. Check
 `docker stats --no-stream` before raising any limit, and treat the total as the
