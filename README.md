@@ -214,6 +214,7 @@ bash tests/verify-email-rate-limits.sh       # nginx limits + TRUST_PROXY reache
 bash tests/verify-certbot-webroot.sh         # the webroot renewal path is intact
 bash tests/verify-memorial-credential-refresh.sh  # the refresh script refuses a bad value
 bash tests/verify-zenvora-admin-secret-refresh.sh  # rotation accepts short non-secrets, still refuses short secrets
+bash tests/verify-secret-backup-rotation.sh  # a rotation leaves exactly one .bak copy
 bash tests/verify-cloudflare-real-ip.sh      # the Cloudflare real-IP config exists and is well-formed
 bash tests/verify-admin-dayandyou-hardening.sh  # admin.valtou.com and dayandyou.com carry rate limits + security headers
 ```

@@ -16,18 +16,21 @@ secretlib_orig_owner() {
   stat -c '%u:%g' "$1"
 }
 
-# Keeps only the most recent backup, creates today's at 0600 directly (no
-# window where a plain `cp` would leave it at the umask's default mode), and
-# prints its path.
+# Creates today's backup at 0600 directly (no window where a plain `cp` would
+# leave it at the umask's default mode), then removes every older backup, so
+# exactly one remains: the value being replaced. (It used to prune to the
+# newest existing backup *before* adding one, which left two -- including a
+# value already rotated out twice.) Prints the new backup's path.
 secretlib_rotate_backup() {
   env_file="$1"
   orig_owner="$2"
-  for old in $(ls -t "$env_file".bak-* 2>/dev/null | tail -n +2); do
-    rm -f "$old"
-  done
   backup="$env_file.bak-$(date -u +%Y%m%dT%H%M%SZ)"
   install -m 600 "$env_file" "$backup"
   chown "$orig_owner" "$backup"
+  for old in "$env_file".bak-*; do
+    [ -e "$old" ] || continue
+    [ "$old" = "$backup" ] || rm -f "$old"
+  done
   printf '%s\n' "$backup"
 }
 
