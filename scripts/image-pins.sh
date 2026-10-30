@@ -13,8 +13,9 @@ set -eu
 #                                   record a release as known-good, after its
 #                                   health check passed: resolves the pulled
 #                                   image's digest, writes .env, appends history
-#   image-pins.sh rollback <service>
-#                                   the pinned release is bad: re-pin the previous
+#   image-pins.sh rollback <service> <bad value>
+#                                   the pinned release <bad value> (its SHA, with
+#                                   or without @digest) is bad: re-pin the previous
 #                                   known-good one and forget the bad one. Changes
 #                                   state only -- run the service's deploy (or
 #                                   `docker compose up -d <service>` WITH its env)
@@ -44,7 +45,9 @@ local_digest() {
 with_digest() {
   case "$2" in *@sha256:*) printf '%s\n' "$2"; return 0 ;; esac
   _d="$(local_digest "$(pins_full_ref "$1" "$2")")"
-  if [ -n "$_d" ]; then printf '%s@%s\n' "$2" "$_d"; else printf '%s\n' "$2"; fi
+  if [ -n "$_d" ]; then printf '%s@%s\n' "$2" "$_d"; return 0; fi
+  echo "image-pins: no local digest for $(pins_full_ref "$1" "$2"); pinning the tag alone (pull it first to pin by digest)" >&2
+  printf '%s\n' "$2"
 }
 
 cmd_get() {
@@ -65,11 +68,19 @@ cmd_promote() {
   echo "image-pins: $_var=$_value (known-good)"
 }
 
+# The caller names the release it believes is bad (the SHA it deployed, with
+# or without @digest). After a deploy that failed before promote, .env still
+# holds the last known-good release; rolling back from it would regress a
+# further step and drop a good release from history.
 cmd_rollback() {
   _var="$(var_for_service "$1")"
   pins_lock
   _bad="$(pins_env_get "$_var")"
   [ -n "$_bad" ] || die "$_var is not pinned; nothing to roll back from"
+  case "$_bad" in
+    "$2"|"$2"@*) ;;
+    *) die "$_var is pinned to $_bad, not $2; refusing (a deploy that failed before promote needs no rollback)" ;;
+  esac
   _target="$(pins_history "$_var" | grep -vxF -- "$_bad" | tail -n 1)" || true
   [ -n "$_target" ] || die "no earlier known-good $_var in $(pins_history_file "$_var"); left at $_bad"
   pins_env_set "$_var" "$_target"
@@ -135,6 +146,6 @@ case "${1:-}" in
   check) cmd_check ;;
   get) [ $# -eq 2 ] || die "usage: get <service>"; cmd_get "$2" ;;
   promote) [ $# -eq 3 ] || die "usage: promote <service> <value>"; cmd_promote "$2" "$3" ;;
-  rollback) [ $# -eq 2 ] || die "usage: rollback <service>"; cmd_rollback "$2" ;;
-  *) die "usage: image-pins.sh seed|check|get <service>|promote <service> <value>|rollback <service>" ;;
+  rollback) [ $# -eq 3 ] && [ -n "$3" ] || die "usage: rollback <service> <bad value>"; cmd_rollback "$2" "$3" ;;
+  *) die "usage: image-pins.sh seed|check|get <service>|promote <service> <value>|rollback <service> <bad value>" ;;
 esac

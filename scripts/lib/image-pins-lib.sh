@@ -23,6 +23,7 @@
 # known-good release. A per-variable history file next to it lists the
 # known-good values in order; rollback and pruning both read it.
 
+# shellcheck disable=SC2034  # read by tests/verify-image-pinning.sh
 PINS_COMPOSE_MODE=transition
 
 # service|container|VAR|kind|repo|fallback
@@ -111,15 +112,17 @@ pins_lookup_ref() {
 
 pins_env_get() {
   [ -f "$PINS_ENV_FILE" ] || return 0
-  sed -n "s/^$1=//p" "$PINS_ENV_FILE" | tail -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
+  sed -n "s/^\(export[[:space:]]\{1,\}\)\{0,1\}$1=//p" "$PINS_ENV_FILE" | tail -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
 }
 
 # Rewrites .env atomically, keeping every other line (GHCR_OWNER, anything an
-# operator added).
+# operator added) and the file's mode: mktemp's 0600 would otherwise replace
+# it, and a compose run as another user could no longer read .env.
 pins_env_set() {
   _tmp="$(mktemp "$PINS_ENV_FILE.XXXXXX")"
   if [ -f "$PINS_ENV_FILE" ]; then
-    grep -v "^$1=" "$PINS_ENV_FILE" >"$_tmp" || true
+    cp -p "$PINS_ENV_FILE" "$_tmp"
+    grep -Ev "^(export[[:space:]]+)?$1=" "$PINS_ENV_FILE" >"$_tmp" || true
   fi
   printf '%s=%s\n' "$1" "$2" >>"$_tmp"
   mv "$_tmp" "$PINS_ENV_FILE"

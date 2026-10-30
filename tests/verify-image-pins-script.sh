@@ -92,9 +92,18 @@ $SHA2@$(dg 2)" ] || fail "unexpected history:\n$(history_of DAYANDYOU_PROD_TAG)"
 [ "$(grep -c '^DAYANDYOU_PROD_TAG=' "$IMAGE_PINS_ENV_FILE")" = 1 ] || fail ".env has duplicate DAYANDYOU_PROD_TAG lines"
 [ "$("$PINS" get dayandyou-prod)" = "$SHA2@$(dg 2)" ] || fail "get does not return the pinned value"
 
+# --- rollback must name the release it is rolling back from ------------------
+# Run after a deploy that failed before promote, a bare rollback would step
+# back from the still-good pin and drop it from history.
+before="$(cat "$IMAGE_PINS_ENV_FILE")"
+expect_refused rollback dayandyou-prod
+expect_refused rollback dayandyou-prod "$SHA1"
+[ "$(cat "$IMAGE_PINS_ENV_FILE")" = "$before" ] || fail "a refused rollback changed .env"
+[ "$(history_of DAYANDYOU_PROD_TAG | wc -l | tr -d ' ')" = 2 ] || fail "a refused rollback changed the history"
+
 # --- rollback re-pins, not retags ---------------------------------------------
 : >"$FIX/calls.log"
-"$PINS" rollback dayandyou-prod >/dev/null
+"$PINS" rollback dayandyou-prod "$SHA2" >/dev/null
 [ "$(env_value DAYANDYOU_PROD_TAG)" = "$SHA1@$(dg 1)" ] || fail "rollback did not re-pin the previous release: $(env_value DAYANDYOU_PROD_TAG)"
 [ "$(history_of DAYANDYOU_PROD_TAG)" = "$SHA1@$(dg 1)" ] || fail "rollback kept the bad release as known-good"
 grep -q '^tag ' "$FIX/calls.log" && fail "rollback retagged an image"
@@ -102,9 +111,27 @@ grep -q '^tag ' "$FIX/calls.log" && fail "rollback retagged an image"
 resolved="$(pins_full_ref DAYANDYOU_PROD_TAG "$(env_value DAYANDYOU_PROD_TAG)")"
 [ "$resolved" = "$REPO:$SHA1@$(dg 1)" ] || fail "compose would resolve $resolved, not the rolled-back digest"
 before="$(cat "$IMAGE_PINS_ENV_FILE")"
-expect_refused rollback dayandyou-prod
+expect_refused rollback dayandyou-prod "$SHA1@$(dg 1)"
 [ "$(cat "$IMAGE_PINS_ENV_FILE")" = "$before" ] || fail "a refused rollback changed .env"
 [ "$(env_value DAYANDYOU_STAGING_TAG)" = "" ] || fail "prod promote/rollback touched staging"
+
+# --- .env keeps its mode; `export VAR=` lines are understood ---------------------
+chmod 640 "$IMAGE_PINS_ENV_FILE"
+"$PINS" promote dayandyou-prod "$SHA2" >/dev/null
+mode="$(stat -c %a "$IMAGE_PINS_ENV_FILE" 2>/dev/null || stat -f %Lp "$IMAGE_PINS_ENV_FILE")"
+[ "$mode" = 640 ] || fail "promote changed .env's mode to $mode (compose run as another user could no longer read it)"
+"$PINS" rollback dayandyou-prod "$SHA2" >/dev/null
+echo "export FAMILY_API_TAG=$SHA3@$(dg 3)" >>"$IMAGE_PINS_ENV_FILE"
+[ "$("$PINS" get api)" = "$SHA3@$(dg 3)" ] || fail "get ignores an 'export VAR=' line, which compose reads"
+echo "$REPO@$(dg 3)" >"$FIX/digests/$(key "ghcr.io/zenvoraai/family-media-api:$SHA2")"
+"$PINS" promote api "$SHA2" >/dev/null 2>&1
+[ "$(grep -c 'FAMILY_API_TAG=' "$IMAGE_PINS_ENV_FILE")" = 1 ] || fail "promote left a second FAMILY_API_TAG line:\n$(cat "$IMAGE_PINS_ENV_FILE")"
+sed -i.bak '/FAMILY_API_TAG=/d' "$IMAGE_PINS_ENV_FILE"; rm -f "$IMAGE_PINS_ENV_FILE.bak" "$IMAGE_PINS_STATE_DIR/FAMILY_API_TAG.history"
+
+# --- a value whose digest cannot be resolved is pinned, but not silently ---------
+"$PINS" promote memorial-api "$SHA3" >/dev/null 2>"$TMP/nodigest.err" || fail "promote of a bare SHA failed"
+grep -q "no local digest" "$TMP/nodigest.err" || fail "promote stored a bare SHA without warning"
+sed -i.bak '/MEMORIAL_API_TAG=/d' "$IMAGE_PINS_ENV_FILE"; rm -f "$IMAGE_PINS_ENV_FILE.bak" "$IMAGE_PINS_STATE_DIR/MEMORIAL_API_TAG.history"
 
 # --- seed pins what runs now --------------------------------------------------
 seed_container() {  # name config-image image-id repo-digest-lines
