@@ -158,15 +158,34 @@ pins_keep_values() {
   { pins_env_get "$1"; pins_history "$1" | tail -n "$2"; } | awk 'NF && !seen[$0]++'
 }
 
+# mkdir is atomic, so the directory is the lock. The holder's PID inside it
+# lets a later run clear a lock left by a killed process (SIGKILL, reboot)
+# instead of failing every deploy's promote until someone removes it by hand.
+# `ps -p` rather than `kill -0`: the holder may be another user (root vs the
+# deploy user), and kill -0 then fails with EPERM although it is alive.
 pins_lock() {
   _tries=0
   until mkdir "$PINS_STATE_DIR/.lock" 2>/dev/null; do
+    _holder="$(cat "$PINS_STATE_DIR/.lock/pid" 2>/dev/null || true)"
+    if [ -n "$_holder" ] && ! ps -p "$_holder" >/dev/null 2>&1 \
+      && [ "$(cat "$PINS_STATE_DIR/.lock/pid" 2>/dev/null || true)" = "$_holder" ]; then
+      echo "image-pins: clearing a stale lock left by exited process $_holder" >&2
+      rm -rf "$PINS_STATE_DIR/.lock"
+      continue
+    fi
     _tries=$((_tries + 1))
     [ "$_tries" -lt "${PINS_LOCK_TRIES:-60}" ] || { echo "image-pins: could not take $PINS_STATE_DIR/.lock" >&2; return 1; }
     sleep 1
   done
-  trap 'rmdir "$PINS_STATE_DIR/.lock" 2>/dev/null || true' EXIT INT TERM
+  echo "$$" >"$PINS_STATE_DIR/.lock/pid"
+  trap pins_unlock EXIT
+  # A signal must also stop the script: a trap that only released the lock
+  # would let it carry on writing .env unlocked.
+  trap 'pins_unlock; exit 130' INT
+  trap 'pins_unlock; exit 143' TERM
 }
+
+pins_unlock() { rm -rf "$PINS_STATE_DIR/.lock"; }
 
 pins_init() {
   _root="$(cd "$(dirname -- "$0")/.." && pwd)"

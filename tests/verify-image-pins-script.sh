@@ -22,7 +22,7 @@ PRUNE="$ROOT/scripts/docker-prune.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 BIN="$TMP/bin" FIX="$TMP/fix"
-mkdir -p "$BIN" "$FIX"/{containers,digests,ids,images}
+mkdir -p "$BIN" "$FIX"/{containers,digests,ids,images,images-fail}
 export IMAGE_PINS_ENV_FILE="$TMP/.env" IMAGE_PINS_STATE_DIR="$TMP/state" FIX PINS_LOCK_TRIES=2
 export PATH="$BIN:$PATH"
 
@@ -35,6 +35,7 @@ cat >"$BIN/docker" <<'STUB'
 # Minimal docker stand-in driven by files under $FIX. Logs every call.
 k() { printf '%s' "$1" | tr '/:@' '___'; }
 echo "$*" >>"$FIX/calls.log"
+[ -e "$FIX/slow" ] && sleep 2
 last="${*: -1}"
 case "$1 ${2:-}" in
   "inspect --format") cat "$FIX/containers/$(k "$last")" 2>/dev/null || exit 1 ;;
@@ -43,7 +44,9 @@ case "$1 ${2:-}" in
       *RepoDigests*) cat "$FIX/digests/$(k "$last")" 2>/dev/null || exit 1 ;;
       *.Id*) cat "$FIX/ids/$(k "$last")" 2>/dev/null || exit 1 ;;
     esac ;;
-  "images --no-trunc") cat "$FIX/images/$(k "$last")" 2>/dev/null || true ;;
+  "images --no-trunc")
+    [ -e "$FIX/images-fail/$(k "$last")" ] && { echo "docker stub: cannot list $last" >&2; exit 1; }
+    cat "$FIX/images/$(k "$last")" 2>/dev/null || true ;;
   "image rm")
     grep -qxF -- "$last" "$FIX/inuse" 2>/dev/null && exit 1
     echo "$last" >>"$FIX/rm.log" ;;
@@ -155,6 +158,27 @@ for n in 1 4 5 6 7 24; do echo "id-$n" >"$FIX/ids/$(key "$REPO@$(dg "$n")")"; do
   echo "id-busy $REPO staging $(dg 98)"        # used by a stopped container
 } >"$FIX/images/$(key "$REPO")"
 echo "$REPO:staging" >"$FIX/inuse"
+# Every other variable's current pin is a local image.
+for var in $(pins_vars); do
+  f="$FIX/ids/$(key "$(pins_lookup_ref "$(pins_full_ref "$var" "$(env_value "$var")")")")"
+  [ -e "$f" ] || echo "id-$var" >"$f"
+done
+
+# --- prune refuses when a pinned image does not resolve locally ------------------
+# (inspect format change, containerd store, image removed by hand): an empty
+# keep set for that repo would remove its rollback images.
+mv "$FIX/ids/$(key "$REPO@$(dg 7)")" "$TMP/id7"
+: >"$FIX/rm.log"
+if "$PRUNE" >"$TMP/unresolved.out" 2>&1; then fail "prune ran although the pinned dayandyou-prod image does not resolve"; fi
+[ ! -s "$FIX/rm.log" ] || fail "prune removed images although a pin does not resolve:\n$(cat "$FIX/rm.log")"
+grep -q 'DAYANDYOU_PROD_TAG.*does not resolve' "$TMP/unresolved.out" || fail "prune did not say which pin failed:\n$(cat "$TMP/unresolved.out")"
+mv "$TMP/id7" "$FIX/ids/$(key "$REPO@$(dg 7)")"
+
+# --- prune waits for the pins lock ----------------------------------------------
+mkdir "$IMAGE_PINS_STATE_DIR/.lock"; echo "$$" >"$IMAGE_PINS_STATE_DIR/.lock/pid"   # held by this live shell
+if "$PRUNE" >/dev/null 2>&1; then fail "prune ran while a live process held the pins lock"; fi
+[ ! -s "$FIX/rm.log" ] || fail "prune removed images without the pins lock"
+rm -rf "$IMAGE_PINS_STATE_DIR/.lock"
 echo "id-other ghcr.io/qclawchang/zenvora-admin latest <none>" >"$FIX/images/$(key ghcr.io/qclawchang/zenvora-admin)"
 : >"$FIX/rm.log"
 "$PRUNE" >"$TMP/prune.out" 2>&1 || fail "prune failed:\n$(cat "$TMP/prune.out")"
@@ -163,11 +187,50 @@ sha1="$(printf "%040d" 0 | tr 0 1)" sha4="$(printf "%040d" 0 | tr 0 4)"
   || fail "prune removed the wrong set (expected the 2 oldest releases + :release):\n$(cat "$FIX/rm.log")"
 grep -q "kept $REPO:staging" "$TMP/prune.out" || fail "an in-use image was not reported as kept"
 grep -q qclawchang "$FIX/calls.log" && fail "prune looked at a repository it does not manage"
+[ ! -d "$IMAGE_PINS_STATE_DIR/.lock" ] || fail "prune left the pins lock behind"
+
+# --- a repo that cannot be listed is reported, not read as empty ------------------
+touch "$FIX/images-fail/$(key "$REPO")"
+if "$PRUNE" >"$TMP/listfail.out" 2>&1; then fail "prune exited 0 although it could not list $REPO"; fi
+grep -q "could not list images of $REPO" "$TMP/listfail.out" || fail "listing failure not reported:\n$(cat "$TMP/listfail.out")"
+rm "$FIX/images-fail/$(key "$REPO")"
+
+# --- a lock left by a killed process is cleared; a live holder is waited on -----
+sh -c 'exit 0' & dead=$!; wait "$dead"
+mkdir "$IMAGE_PINS_STATE_DIR/.lock"; echo "$dead" >"$IMAGE_PINS_STATE_DIR/.lock/pid"
+"$PINS" promote dayandyou-prod "$(printf "%040d" 0 | tr 0 7)" >/dev/null 2>"$TMP/stale.err" || fail "promote failed on a stale lock:\n$(cat "$TMP/stale.err")"
+grep -q "stale lock" "$TMP/stale.err" || fail "stale lock cleared silently"
+mkdir "$IMAGE_PINS_STATE_DIR/.lock"; echo "$$" >"$IMAGE_PINS_STATE_DIR/.lock/pid"
+if "$PINS" promote dayandyou-prod "$(printf "%040d" 0 | tr 0 7)" >/dev/null 2>&1; then fail "promote took a lock held by a live process"; fi
+rm -rf "$IMAGE_PINS_STATE_DIR/.lock"
 
 : >"$FIX/rm.log"
 IMAGE_KEEP_GOOD=1 DRY_RUN=1 "$PRUNE" >"$TMP/dry.out"
 [ ! -s "$FIX/rm.log" ] || fail "DRY_RUN removed images"
 grep -q "would remove $REPO:$(printf "%040d" 0 | tr 0 6)" "$TMP/dry.out" || fail "IMAGE_KEEP_GOOD=1 should drop the second-newest release:\n$(cat "$TMP/dry.out")"
 if IMAGE_KEEP_GOOD=0 "$PRUNE" >/dev/null 2>&1; then fail "IMAGE_KEEP_GOOD=0 accepted"; fi
+
+# --- a killed run leaves a lock that names it; a TERM stops the run ------------
+# seed takes the lock, then calls docker (slowed here) for every unset variable.
+lockrun() {  # runs seed in the background against a fresh, empty .env
+  IMAGE_PINS_ENV_FILE="$TMP/sig.env" IMAGE_PINS_STATE_DIR="$TMP/sig" "$PINS" seed >/dev/null 2>&1 &
+  pid=$!
+  for _ in $(seq 50); do [ -s "$TMP/sig/.lock/pid" ] && break; sleep 0.1; done
+}
+rm -rf "$TMP/sig"; : >"$TMP/sig.env"; touch "$FIX/slow"
+lockrun
+[ "$(cat "$TMP/sig/.lock/pid" 2>/dev/null)" = "$pid" ] || fail "the lock does not record its holder's PID ($pid)"
+kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
+[ -d "$TMP/sig/.lock" ] || fail "test setup: SIGKILL should leave the lock behind"
+rm -f "$FIX/slow"
+IMAGE_PINS_ENV_FILE="$TMP/sig.env" IMAGE_PINS_STATE_DIR="$TMP/sig" "$PINS" promote dayandyou-prod "$SHA1" >/dev/null 2>&1 \
+  || fail "the lock of a SIGKILLed run blocked the next promote"
+: >"$TMP/sig.env"; touch "$FIX/slow"
+lockrun
+kill -TERM "$pid"; status=0; wait "$pid" || status=$?
+rm -f "$FIX/slow"
+[ "$status" = 143 ] || fail "a TERMed run exited $status, not 143 (it kept going after releasing the lock)"
+[ ! -s "$TMP/sig.env" ] || fail "a TERMed run went on to write .env unlocked:\n$(cat "$TMP/sig.env")"
+[ ! -d "$TMP/sig/.lock" ] || fail "a TERMed run left its lock"
 
 echo "PASS: image pins refuse moving tags, roll back by re-pinning, and prune keeps the known-good window"
