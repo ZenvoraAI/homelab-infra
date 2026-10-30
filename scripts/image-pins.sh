@@ -119,7 +119,10 @@ cmd_check() {
   _bad=0
   for _var in $(pins_vars); do
     _v="$(pins_env_get "$_var")"
-    if [ -z "$_v" ]; then echo "UNSET $_var" >&2; _bad=1; continue; fi
+    if [ -z "$_v" ]; then
+      echo "UNSET $_var (compose falls back to: $(pins_field "$(pins_row_for_var "$_var")" 6))" >&2
+      _bad=1; continue
+    fi
     _why="$(pins_validate "$(kind_for_var "$_var")" "$_v")" || { echo "BAD   $_var=$_v: $_why" >&2; _bad=1; continue; }
     echo "ok    $_var=$_v"
   done

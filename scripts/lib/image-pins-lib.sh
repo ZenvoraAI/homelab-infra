@@ -3,32 +3,48 @@
 # standalone -- sourced.
 #
 # The host's gitignored project .env (which `docker compose` reads on its own)
-# holds one pinned image value per variable below. docker-compose.yml requires
-# every one (${VAR:?…}), so no compose command can fall back to a moving tag.
+# holds one pinned image value per variable below.
+#
+# PINS_COMPOSE_MODE says how docker-compose.yml treats an unset variable, and
+# tests/verify-image-pinning.sh holds the compose file to it:
+#   transition : ${VAR:-<fallback>}, the fallback column below -- exactly what
+#                the service ran before pinning (a moving tag for the app
+#                images, a digest for the third-party ones). An unseeded host
+#                keeps working: compose interpolates the WHOLE file for every
+#                command, so one required-but-unset variable would break every
+#                product's deploy, and zenvora-admin's deploy runs homelab main
+#                unattended. `image-pins.sh check` lists what is still falling
+#                back.
+#   strict     : ${VAR:?…} -- no compose command runs until every variable is
+#                pinned. Switch only after `image-pins.sh check` passes on the
+#                host (README "Images and tags", rollout).
 # A deploy exports the value it just built (the shell beats .env), and writes
 # it into .env only once the release is healthy, so .env always names the last
 # known-good release. A per-variable history file next to it lists the
 # known-good values in order; rollback and pruning both read it.
 
-# service|container|VAR|kind|repo
+PINS_COMPOSE_MODE=transition
+
+# service|container|VAR|kind|repo|fallback
 #   kind=tag   : image is ghcr.io/$GHCR_OWNER/<repo>:${VAR}; the value is a
 #                40-hex commit SHA, optionally with @sha256:<digest>, or any
 #                tag WITH a digest (e.g. release@sha256:… as seeded).
 #   kind=image : the value is a whole third-party ref, which must carry a digest.
+#   fallback   : the transition-mode compose default (see above).
 # nginx and docker-api-filter deliberately share NGINX_IMAGE: the filter reuses
 # the public nginx image so there is no second image to trust.
 pins_table() {
   cat <<'TABLE'
-nginx|homelab-nginx|NGINX_IMAGE|image|
-api|homelab-family-api|FAMILY_API_TAG|tag|family-media-api
-securevault-api|homelab-securevault-api|SECUREVAULT_API_TAG|tag|securevault-api
-dayandyou-staging|homelab-dayandyou-staging|DAYANDYOU_STAGING_TAG|tag|dayandyou
-dayandyou-prod|homelab-dayandyou-prod|DAYANDYOU_PROD_TAG|tag|dayandyou
-memorial-api|homelab-memorial-api|MEMORIAL_API_TAG|tag|aiqiuqi-memorial-api
-memorial-worker|homelab-memorial-worker|MEMORIAL_WORKER_TAG|tag|aiqiuqi-memorial-worker
-docker-socket-proxy|homelab-docker-socket-proxy|DOCKER_SOCKET_PROXY_IMAGE|image|
-docker-api-filter|homelab-docker-api-filter|NGINX_IMAGE|image|
-zenvora-admin|homelab-zenvora-admin|ZENVORA_ADMIN_TAG|tag|zenvora-admin
+nginx|homelab-nginx|NGINX_IMAGE|image||nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+api|homelab-family-api|FAMILY_API_TAG|tag|family-media-api|latest
+securevault-api|homelab-securevault-api|SECUREVAULT_API_TAG|tag|securevault-api|latest
+dayandyou-staging|homelab-dayandyou-staging|DAYANDYOU_STAGING_TAG|tag|dayandyou|staging
+dayandyou-prod|homelab-dayandyou-prod|DAYANDYOU_PROD_TAG|tag|dayandyou|release
+memorial-api|homelab-memorial-api|MEMORIAL_API_TAG|tag|aiqiuqi-memorial-api|latest
+memorial-worker|homelab-memorial-worker|MEMORIAL_WORKER_TAG|tag|aiqiuqi-memorial-worker|latest
+docker-socket-proxy|homelab-docker-socket-proxy|DOCKER_SOCKET_PROXY_IMAGE|image||tecnativa/docker-socket-proxy:0.3@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
+docker-api-filter|homelab-docker-api-filter|NGINX_IMAGE|image||nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+zenvora-admin|homelab-zenvora-admin|ZENVORA_ADMIN_TAG|tag|zenvora-admin|latest
 TABLE
 }
 

@@ -35,7 +35,7 @@ x-logging: &default-logging
 # edit; the default is the answer in every case today.
 services:
   nginx:
-    image: ${NGINX_IMAGE:?NGINX_IMAGE unset -- set by scripts/image-pins.sh, see README Images and tags}
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10}
     container_name: homelab-nginx
     network_mode: host
     restart: unless-stopped
@@ -47,7 +47,7 @@ services:
       - /var/lib/homelab-acme:/var/www/certbot:ro
     mem_limit: 64m
   api:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/family-media-api:${FAMILY_API_TAG:?FAMILY_API_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/family-media-api:${FAMILY_API_TAG:-latest}
     container_name: homelab-family-api
     network_mode: host
     restart: unless-stopped
@@ -56,7 +56,7 @@ services:
       - /opt/secrets/family-media/.env:/app/.env:ro
     mem_limit: 640m
   securevault-api:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api:${SECUREVAULT_API_TAG:?SECUREVAULT_API_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api:${SECUREVAULT_API_TAG:-latest}
     container_name: homelab-securevault-api
     network_mode: host
     restart: unless-stopped
@@ -100,7 +100,7 @@ services:
       - PASSWORD_RESET_PATH
     mem_limit: 256m
   dayandyou-staging:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_STAGING_TAG:?DAYANDYOU_STAGING_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_STAGING_TAG:-staging}
     container_name: homelab-dayandyou-staging
     network_mode: host
     restart: unless-stopped
@@ -138,7 +138,7 @@ services:
       - CRON_SECRET
     mem_limit: 350m
   dayandyou-prod:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_PROD_TAG:?DAYANDYOU_PROD_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_PROD_TAG:-release}
     container_name: homelab-dayandyou-prod
     network_mode: host
     restart: unless-stopped
@@ -173,7 +173,7 @@ services:
       - CRON_SECRET
     mem_limit: 400m
   memorial-api:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-api:${MEMORIAL_API_TAG:?MEMORIAL_API_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-api:${MEMORIAL_API_TAG:-latest}
     container_name: homelab-memorial-api
     network_mode: host
     restart: unless-stopped
@@ -182,7 +182,7 @@ services:
       - /opt/secrets/aiqiuqi-memorial/api.env
     mem_limit: 192m
   memorial-worker:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-worker:${MEMORIAL_WORKER_TAG:?MEMORIAL_WORKER_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-worker:${MEMORIAL_WORKER_TAG:-latest}
     container_name: homelab-memorial-worker
     network_mode: host
     restart: unless-stopped
@@ -215,7 +215,7 @@ services:
   # the probe in README "docker API allow-list"; the candidate mitigations are
   # listed there, none applied yet.
   docker-socket-proxy:
-    image: ${DOCKER_SOCKET_PROXY_IMAGE:?DOCKER_SOCKET_PROXY_IMAGE unset -- set by scripts/image-pins.sh, see README Images and tags}
+    image: ${DOCKER_SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:0.3@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2}
     container_name: homelab-docker-socket-proxy
     restart: unless-stopped
     logging: *default-logging
@@ -252,7 +252,7 @@ services:
   # container is still attached to docker-proxy-net, that name resolves to
   # both.
   docker-api-filter:
-    image: ${NGINX_IMAGE:?NGINX_IMAGE unset -- set by scripts/image-pins.sh, see README Images and tags}
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10}
     container_name: homelab-docker-api-filter
     restart: unless-stopped
     logging: *default-logging
@@ -278,7 +278,7 @@ services:
       start_period: 10s
     mem_limit: 16m
   zenvora-admin:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/zenvora-admin:${ZENVORA_ADMIN_TAG:?ZENVORA_ADMIN_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/zenvora-admin:${ZENVORA_ADMIN_TAG:-latest}
     container_name: homelab-zenvora-admin
     # Not network_mode: host, unlike every other app here -- this is the one
     # service that talks to docker-socket-proxy, and that proxy must not be
