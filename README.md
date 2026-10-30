@@ -69,11 +69,24 @@ The organization is spelled `ZenvoraAI`, but every image reference here says
 it outright with `repository name must be lowercase`, before the request ever
 reaches the registry.
 
-Every service image is pinned, and none can fall back to a moving tag.
-`docker-compose.yml` names each image through a **required** variable
-(`${VAR:?…}`): with the variable unset, every `docker compose` command fails
-rather than pulling `:latest`/`:release`. Compose fails the *whole* project on
-any unset one, even `docker compose pull <other-service>`.
+Every service image is named through a pin variable, in one of two modes
+(`PINS_COMPOSE_MODE` in `scripts/lib/image-pins-lib.sh`;
+`tests/verify-image-pinning.sh` holds the compose file to it):
+
+- **transition** (now): `${VAR:-<fallback>}`. An unset variable falls back to
+  exactly what that service ran before pinning: `:latest`/`:release`/`:staging`
+  for the app images (moving, as before) and a digest-pinned
+  `nginx:1.27-alpine` / `tecnativa/docker-socket-proxy:0.3` for the
+  third-party ones. `image-pins.sh check` lists what is still falling back.
+- **strict** (after rollout): `${VAR:?…}`. With any variable unset, every
+  `docker compose` command fails rather than pulling a moving tag.
+
+Why not strict straight away: Compose interpolates the *whole* file for every
+command, so one unset required variable fails every product's deploy (even
+`docker compose pull <other-service>`), and zenvora-admin's deploy pulls
+homelab `main` and runs compose unattended on every zenvora push. Strict mode
+is a one-line flip plus the compose lines, kept on its own branch
+(`fix/image-pinning-strict-2026-10-31`) to merge only after the rollout below.
 
 | Variable | Service(s) | Value |
 | --- | --- | --- |
@@ -105,8 +118,10 @@ So `.env` always names the last known-good release:
   <service>)` (or unsetting its variable) and running `up` again. It never
   retags `:release` locally, which would last only until the next pull.
 - A release that went bad after it passed: `scripts/image-pins.sh rollback
-  <service>` re-pins the previous known-good value and drops the bad one from
-  the history. It changes state only. Then recreate the service with its
+  <service> <bad sha>` re-pins the previous known-good value and drops the bad
+  one from the history. It refuses unless `.env` currently pins `<bad sha>`, so
+  running it after a deploy that failed *before* promote (when `.env` still
+  holds the good release) cannot step back past a good one. It changes state only. Then recreate the service with its
   environment. dayandyou and securevault get their secrets from their deploy
   shell, so re-run that product's deploy, or `up` from a shell that has them.
 - A manual or recovery `docker compose pull`/`up` gets exactly the pinned
@@ -116,10 +131,31 @@ So `.env` always names the last known-good release:
 pins each unset variable to the digest its container runs now (one-off, at
 rollout; it never overwrites).
 
-Third-party images are pinned on the host, not in git. Their digests could not
-be resolved when this was written. To move them into git later, replace the
-`${NGINX_IMAGE:?…}` reference with the literal `nginx:<tag>@sha256:<digest>`;
-`tests/verify-image-pinning.sh` accepts either form.
+### Rollout (in this order)
+
+The product workflows do **not** call `promote`/`docker-prune.sh` yet, and
+day-and-you exports only `IMAGE_TAG`, which compose does not read for
+`dayandyou-*`. Until each product's patch lands, its deploys keep working
+because of the transition fallback (and, for the others, because their
+exported `*_TAG` beats `.env`).
+
+1. day-and-you first: export `DAYANDYOU_PROD_TAG="$IMAGE_TAG"` in
+   deploy-prod.yml and `DAYANDYOU_STAGING_TAG="$IMAGE_TAG"` in
+   staging-deploy.yml (inert against the old compose). **Do not seed before
+   this lands**: a seeded `DAYANDYOU_*_TAG` with nobody exporting it pins
+   dayandyou to the seeded release for ever, while its deploy runs migrations
+   and reports success.
+2. Merge this (transition mode) into homelab `main`. Nothing changes on the
+   host until something runs compose; then the fallbacks give today's images,
+   except that the third-party fallbacks are digests, so the next recreate of
+   `docker-socket-proxy`/`docker-api-filter` (a zenvora deploy recreates them
+   as dependencies) may pull a newer build of the same tag.
+3. On the host: `scripts/image-pins.sh seed`, then `promote zenvora-admin
+   <running sha>` by hand if seed refuses it (pre-transfer namespace), then
+   `scripts/image-pins.sh check` until it exits 0.
+4. Land the product patches (promote after health, `docker-prune.sh` instead
+   of the 48h prune, dayandyou rollback via `get`), one product at a time.
+5. Only then merge the strict branch.
 
 ## Normal deployment model
 
@@ -229,8 +265,8 @@ file on disk breaks nothing. Validate, then recreate.
 
 | Script | What it does |
 | --- | --- |
-| `docker-prune.sh` | Keeps, per service, the image `.env` pins plus the newest `IMAGE_KEEP_GOOD` (default 3) known-good releases from `.image-pins/`. Removes every other image of the repositories it manages, plus dangling layers. That is the rollback window. It removes nothing while any service is unpinned, never touches other repositories, and `DRY_RUN=1` previews. Product deploys call it instead of an age-based `docker image prune -af --filter until=48h`, which deleted other products' previous releases. |
-| `image-pins.sh` | `seed`, `check`, `get`, `promote`, `rollback`: the only writer of the pinned image values (see Images and tags). |
+| `docker-prune.sh` | Keeps, per service, the image `.env` pins plus the newest `IMAGE_KEEP_GOOD` (default 3) known-good releases from `.image-pins/`. Removes every other image of the repositories it manages, plus dangling layers. That is the rollback window. It removes nothing while any service is unpinned or any current pin does not resolve to a local image, runs under the pins lock, never touches other repositories, exits non-zero if a repository cannot be listed, and `DRY_RUN=1` previews. Meant to replace each product's age-based `docker image prune -af --filter until=48h`, which deletes other products' previous releases; no product calls it yet (Rollout step 4). |
+| `image-pins.sh` | `seed`, `check`, `get`, `promote`, `rollback <svc> <bad sha>`: the only writer of the pinned image values (see Images and tags). A lock left by a killed run is cleared automatically. |
 | `refresh-memorial-aws-credentials.sh` | Pulls the memorial API and worker AWS credentials from SSM Parameter Store into their env files. |
 | `refresh-memorial-secrets.sh` | Pulls the CloudFront media signing key pair from SSM into the memorial API env file. |
 | `refresh-zenvora-admin-secrets.sh` | Pulls zenvora-admin's 14 secrets from SSM into its env file: GitHub App credentials, SES SMTP credentials, token-encryption key, whitelisted user ID, plus three tokens for external read-only APIs (a fine-grained GitHub alert-check PAT covering all ZenvoraAI-owned tracked repos, a classic PAT for GHCR package listing since neither GitHub Apps nor fine-grained PATs expose an org-level Packages permission, and a Cloudflare API token scoped to the three onboarded zones for the traffic/security-events panel). Same pattern as the memorial scripts, for the same reason. |
@@ -303,7 +339,7 @@ zenvora push: right after merging, run the rollout and probes below by hand.
 cd /opt/homelab-infra && git pull --ff-only
 # 1. Syntax-check the filter config before anything is recreated.
 docker run --rm -v "$PWD/nginx/docker-api-filter/nginx.conf:/etc/nginx/nginx.conf:ro" \
-  "$(scripts/image-pins.sh get nginx)" nginx -t
+  "$(docker compose config --images docker-api-filter)" nginx -t
 # 2. Recreate all three together, so no old container keeps the
 #    docker-socket-proxy name on docker-proxy-net.
 docker compose up -d --force-recreate docker-socket-proxy docker-api-filter zenvora-admin
@@ -401,7 +437,8 @@ normal maintenance.
 
 ## Onboarding a new service
 
-1. Add the Compose service, a required image ref (`${NEW_TAG:?…}`) plus its
+1. Add the Compose service, an image ref in the current pin mode
+   (`${NEW_TAG:?…}` in strict, `${NEW_TAG:-<fallback>}` in transition) plus its
    row in `pins_table` (scripts/lib/image-pins-lib.sh), `mem_limit`, `logging: *default-logging`,
    and any needed nginx server block in this repository. Do not put secrets in
    Compose. Subtract the new limit from the memory budget above before choosing
