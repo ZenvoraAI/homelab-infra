@@ -192,23 +192,23 @@ services:
     mem_limit: 512m
   # CONTAINERS=1 permits the whole /containers/* GET surface in this proxy image
   # (list/inspect, but also logs/top/export/archive across all containers on
-  # the host), not just the /containers/json listing zenvora-admin's own code
-  # calls — there is no finer-grained flag in tecnativa/docker-socket-proxy to
-  # restrict this further, and a bespoke allow-list reverse-proxy in front of a
-  # single internal sidecar is disproportionate complexity here. Accepted as a
-  # residual risk given zenvora-admin's own attack surface is minimal (no file
-  # uploads, no arbitrary command execution paths, one unauthenticated route
-  # pair for the OAuth callback) — written down explicitly so it's a known,
-  # chosen tradeoff rather than an oversight.
+  # the host) -- there is no finer-grained flag in tecnativa/docker-socket-proxy.
+  # inspect returns every container's Config.Env (every secret passed via
+  # environment:/env_file:), and archive reads any file inside any container
+  # (e.g. family-media's mounted .env), so this proxy alone would hand every
+  # secret on the host to whoever compromised zenvora-admin.
+  #
+  # zenvora-admin calls exactly one endpoint, GET /containers/json?all=true
+  # (zenvora-admin src/deployment/dockerProxy.ts). So this proxy is no longer
+  # reachable by zenvora-admin at all: it sits alone with docker-api-filter on
+  # the internal docker-socket-net, and docker-api-filter (below) forwards only
+  # that one path.
   #
   # Not published to the host at all (no `ports:`): every other service here
   # uses network_mode: host, which puts them all on the host's own network
   # stack, so a port merely bound to 127.0.0.1 is reachable from every one of
-  # them, not just zenvora-admin -- a compromise of the lowest-trust container
-  # on the box (e.g. a public storefront) could otherwise reach this proxy and
-  # inspect every sibling container's env vars, i.e. read out every secret on
-  # the host. Reachable only via the private `docker-proxy-net` bridge network
-  # below, shared with nothing except zenvora-admin.
+  # them -- a compromise of the lowest-trust container on the box (e.g. a
+  # public storefront) could otherwise reach this proxy directly.
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3
     container_name: homelab-docker-socket-proxy
@@ -226,9 +226,40 @@ services:
       - NETWORKS=0
       - VOLUMES=0
     networks:
-      - docker-proxy-net
+      docker-socket-net:
+        # The filter's upstream name. Distinct from the service name because
+        # docker-api-filter answers to "docker-socket-proxy" on
+        # docker-proxy-net; reusing that name here would make the filter
+        # resolve itself.
+        aliases:
+          - docker-socket-upstream
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 16m
+  # Allow-list in front of docker-socket-proxy: forwards GET /containers/json
+  # and returns 403 for everything else (nginx/docker-api-filter/nginx.conf).
+  # Same image as the public nginx, so no new image to trust or pull.
+  #
+  # It answers to "docker-socket-proxy" on docker-proxy-net, so zenvora-admin's
+  # existing DOCKER_PROXY_URL=http://docker-socket-proxy:2375 now lands here
+  # with no host-side env edit. All three services must be recreated together
+  # (see README "docker API allow-list"): while an old docker-socket-proxy
+  # container is still attached to docker-proxy-net, that name resolves to
+  # both.
+  docker-api-filter:
+    image: nginx:1.27-alpine
+    container_name: homelab-docker-api-filter
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      docker-proxy-net:
+        aliases:
+          - docker-socket-proxy
+      docker-socket-net: {}
+    volumes:
+      - ./nginx/docker-api-filter/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - docker-socket-proxy
     mem_limit: 16m
   zenvora-admin:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/zenvora-admin:${ZENVORA_ADMIN_TAG:-latest}
@@ -256,7 +287,7 @@ services:
     restart: unless-stopped
     logging: *default-logging
     depends_on:
-      - docker-socket-proxy
+      - docker-api-filter
     # No environment: block at all — everything, including the non-secret
     # PORT, lives in env_file, matching the memorial-api/memorial-worker
     # pattern above. A bare `environment: - PORT` passthrough would resolve
@@ -269,12 +300,13 @@ services:
     #
     # Two values in that env_file must be updated on the host, by hand:
     # DOCKER_PROXY_URL from http://127.0.0.1:2375 to
-    # http://docker-socket-proxy:2375 -- Compose's embedded DNS resolves the
-    # service name on docker-proxy-net now that the proxy is no longer on the
-    # host's loopback -- and NGINX_ORIGIN_HOST from 127.0.0.1 to
+    # http://docker-socket-proxy:2375 -- Compose's embedded DNS resolves that
+    # name on docker-proxy-net (since the docker API allow-list it is
+    # docker-api-filter's alias there, with no further env edit) -- and
+    # NGINX_ORIGIN_HOST from 127.0.0.1 to
     # host.docker.internal, per the extra_hosts comment above. This repo
     # change alone does nothing until both host-side edits and a
-    # `docker compose up -d --force-recreate docker-socket-proxy zenvora-admin`
+    # `docker compose up -d --force-recreate docker-socket-proxy docker-api-filter zenvora-admin`
     # all happen.
     env_file:
       - /opt/secrets/zenvora-admin/.env
@@ -285,3 +317,8 @@ services:
 networks:
   docker-proxy-net:
     driver: bridge
+  # Only docker-socket-proxy and docker-api-filter. internal: no route out,
+  # and nothing that faces the internet is attached.
+  docker-socket-net:
+    driver: bridge
+    internal: true

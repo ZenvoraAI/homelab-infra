@@ -18,27 +18,37 @@ release workflows remain in their own repositories.
 | `dayandyou-staging` | `homelab-dayandyou-staging` | 3002 | `staging.dayandyou.com` | 350m |
 | `memorial-api` | `homelab-memorial-api` | 3001 | `api.aiqiuqi.com` | 192m |
 | `memorial-worker` | `homelab-memorial-worker` | — | none (no listener) | 512m |
-| `docker-socket-proxy` | `homelab-docker-socket-proxy` | none (private network only) | none | 16m |
+| `docker-socket-proxy` | `homelab-docker-socket-proxy` | none (internal network only) | none | 16m |
+| `docker-api-filter` | `homelab-docker-api-filter` | none (private network only) | none | 16m |
 | `zenvora-admin` | `homelab-zenvora-admin` | 3100 (loopback) | `admin.valtou.com` | 128m |
 
-Every service uses `network_mode: host` except `docker-socket-proxy` and
-`zenvora-admin`, which share a private `docker-proxy-net` bridge network
-instead. `docker-socket-proxy` is not published to the host at all: every
-other service here being on `network_mode: host` means a port merely bound to
-`127.0.0.1` is reachable from all of them, not just its intended caller, so
-the Docker-inspect surface this proxy exposes (which returns every container's
-env vars, i.e. every secret on the host) stays reachable only from
-`zenvora-admin`, over `docker-proxy-net`. `zenvora-admin` still publishes
-`127.0.0.1:3100` so nginx (host-network) can reach it exactly as before.
-`zenvora-admin`'s `DOCKER_PROXY_URL` points at `http://docker-socket-proxy:2375`
-(Compose's embedded DNS resolves the service name on that network), not a
+Every service uses `network_mode: host` except `docker-socket-proxy`,
+`docker-api-filter` and `zenvora-admin`, which sit on two private bridge
+networks instead:
+
+- `docker-socket-net` (`internal: true`) holds only `docker-socket-proxy` and
+  `docker-api-filter`. The proxy's `CONTAINERS=1` cannot be narrowed further
+  and also serves inspect (every container's env vars, i.e. every secret on the
+  host) and archive (any file in any container), so nothing internet-facing may
+  reach it directly.
+- `docker-proxy-net` holds `docker-api-filter` and `zenvora-admin`. The filter
+  forwards only `GET /containers/json` (the one call zenvora-admin makes) and
+  returns 403 for everything else; see "docker API allow-list" below.
+
+Neither is published to the host: every other service here being on
+`network_mode: host` means a port merely bound to `127.0.0.1` is reachable
+from all of them, not just its intended caller. `zenvora-admin` still
+publishes `127.0.0.1:3100` so nginx (host-network) can reach it exactly as
+before. `zenvora-admin`'s `DOCKER_PROXY_URL` stays
+`http://docker-socket-proxy:2375`: on `docker-proxy-net` that name is now an
+alias of `docker-api-filter`, not a
 loopback address. The application ports must remain firewalled from the
 public internet. Docker nginx is the only public reverse proxy.
 `memorial-worker` is the one service with no port and no vhost — it processes
 media out of band.
 
-Those limits sum to 2558 MiB on a host measured at 1.9 GiB, so the box is
-deliberately oversubscribed by roughly 31%. A `mem_limit` is a ceiling, not a
+Those limits sum to 2574 MiB on a host measured at 1.9 GiB, so the box is
+deliberately oversubscribed by roughly 32%. A `mem_limit` is a ceiling, not a
 reservation, and no service sits near its own ceiling — but the arithmetic means
 several services peaking together is an OOM, not a slowdown. Check
 `docker stats --no-stream` before raising any limit, and treat the total as the
@@ -216,6 +226,7 @@ bash tests/verify-memorial-credential-refresh.sh  # the refresh script refuses a
 bash tests/verify-zenvora-admin-secret-refresh.sh  # rotation accepts short non-secrets, still refuses short secrets
 bash tests/verify-secret-backup-rotation.sh  # a rotation leaves exactly one .bak copy
 bash tests/verify-nginx-server-tokens.sh    # nginx does not advertise its version
+bash tests/verify-docker-api-allowlist.sh   # zenvora-admin reaches only GET /containers/json
 bash tests/verify-cloudflare-real-ip.sh      # the Cloudflare real-IP config exists and is well-formed
 bash tests/verify-admin-dayandyou-hardening.sh  # admin.valtou.com and dayandyou.com carry rate limits + security headers
 ```
@@ -223,6 +234,36 @@ bash tests/verify-admin-dayandyou-hardening.sh  # admin.valtou.com and dayandyou
 `verify-container-log-limits.sh` asserts per service rather than grepping for
 the `x-logging` anchor, so a service added later without a `logging:` key fails
 the test instead of quietly growing an unbounded log.
+
+## docker API allow-list
+
+`docker-api-filter` (nginx, config in `nginx/docker-api-filter/nginx.conf`)
+sits between `zenvora-admin` and `docker-socket-proxy`. It forwards
+`GET /containers/json` with its query string to a fixed upstream path and
+returns 403 for every other path or method. If zenvora-admin ever needs another
+Docker endpoint, add that exact path to the filter -- never widen it to a
+prefix, and never put `zenvora-admin` back on `docker-socket-net`.
+
+Rolling it out (all three together, so no old container keeps the
+`docker-socket-proxy` name on `docker-proxy-net`):
+
+```bash
+cd /opt/homelab-infra
+docker compose up -d --force-recreate docker-socket-proxy docker-api-filter zenvora-admin
+# zenvora-admin's image (oven/bun slim) has no curl/wget, so probe with bun.
+# Expect: 200 for the first path, 403 for every other one.
+for path in '/containers/json?all=true' /containers/homelab-nginx/json \
+            '/containers/homelab-nginx/archive?path=/etc/hostname' \
+            '/containers/x/..%2F..%2Fcontainers/homelab-nginx/json' /info; do
+  docker exec -e P="$path" homelab-zenvora-admin \
+    bun -e 'const r = await fetch("http://docker-socket-proxy:2375" + process.env.P); console.log(r.status, process.env.P)'
+done
+# The admin panel's Deployment Drift section should still list containers.
+```
+
+The list response still carries each container's name, image, state, labels,
+mounts and command line -- not env or files. Nothing here passes secrets on a
+command line.
 
 ## Container logs are bounded in two places
 
