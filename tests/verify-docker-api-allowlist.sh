@@ -16,6 +16,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FILTER_CONF="$ROOT/nginx/docker-api-filter/nginx.conf"
 
+# shellcheck disable=SC2016  # Ruby source; #{...} is Ruby interpolation
 ruby -ryaml -e '
   compose = YAML.load_file(ARGV[0])
   services = compose.fetch("services")
@@ -51,10 +52,17 @@ ruby -ryaml -e '
   errors << "docker-api-filter must not publish ports" if f["ports"]
   errors << "docker-api-filter must not use host networking" if f["network_mode"]
   errors << "docker-api-filter needs a mem_limit" unless f["mem_limit"]
+  # The healthcheck goes through the filter to the raw proxy, so it fails when
+  # the upstream is unreachable (nginx answers 502), and zenvora-admin waits
+  # on it -- a broken filter makes `docker compose up` fail loudly instead of
+  # deploying "healthy" while every docker call errors.
+  hc = Array(f.dig("healthcheck", "test")).join(" ")
+  errors << "docker-api-filter healthcheck must fetch http://127.0.0.1:2375/containers/json through the filter, found: #{hc.inspect}" unless hc.include?("wget") && hc.include?("http://127.0.0.1:2375/containers/json")
 
   # zenvora-admin reaches only the filter.
   errors << "zenvora-admin must be on docker-proxy-net only, found #{nets.("zenvora-admin").keys}" unless nets.("zenvora-admin").keys == ["docker-proxy-net"]
-  errors << "zenvora-admin must depend on docker-api-filter" unless Array(services["zenvora-admin"]["depends_on"]).include?("docker-api-filter")
+  dep = services["zenvora-admin"]["depends_on"]
+  errors << "zenvora-admin must depend on docker-api-filter being healthy" unless dep.is_a?(Hash) && dep.dig("docker-api-filter", "condition") == "service_healthy"
 
   # Nothing else may share either private network.
   others = services.reject { |n, _| %w[docker-socket-proxy docker-api-filter zenvora-admin].include?(n) }
@@ -72,9 +80,16 @@ conf="$(sed 's/#.*//' "$FILTER_CONF")"
 locations="$(grep -E '^[[:space:]]*location ' <<<"$conf" | sed -E 's/^[[:space:]]+//; s/[[:space:]]*\{$//')"
 [ "$locations" = "$(printf 'location = /containers/json\nlocation /')" ] \
   || fail "filter must have exactly 'location = /containers/json' and a catch-all, found:\n$locations"
+# Fixed path AND fixed query: the client's query string is not forwarded, so
+# e.g. ?size=true (makes Docker size every container's filesystem -- slow and
+# I/O-heavy on this box) cannot be passed through.
 # shellcheck disable=SC2016  # nginx variables, matched literally
-grep -Fq 'proxy_pass http://$docker_socket_upstream/containers/json$is_args$args;' <<<"$conf" \
-  || fail "proxy_pass must use a fixed upstream path, not the client URI"
+grep -Fq 'proxy_pass http://$docker_socket_upstream/containers/json?all=true;' <<<"$conf" \
+  || fail "proxy_pass must use a fixed upstream path and query (/containers/json?all=true)"
+# shellcheck disable=SC2016  # nginx variable names, matched literally
+if grep -Eq '\$(args|is_args|query_string|request_uri|arg_[a-z_]+)' <<<"$conf"; then
+  fail "the filter must not forward any part of the client's URI or query string"
+fi
 [ "$(grep -c 'proxy_pass' <<<"$conf")" = 1 ] || fail "filter must have exactly one proxy_pass"
 grep -Eq 'limit_except GET[[:space:]]*\{' <<<"$conf" || fail "filter must refuse non-GET methods"
 grep -Eq 'return 403;' <<<"$conf" || fail "catch-all must return 403"

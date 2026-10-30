@@ -29,8 +29,9 @@ networks instead:
 - `docker-socket-net` (`internal: true`) holds only `docker-socket-proxy` and
   `docker-api-filter`. The proxy's `CONTAINERS=1` cannot be narrowed further
   and also serves inspect (every container's env vars, i.e. every secret on the
-  host) and archive (any file in any container), so nothing internet-facing may
-  reach it directly.
+  host) and archive (any file in any container), so zenvora-admin no longer
+  shares a network with it. This does not stop the host-network services from
+  reaching the proxy's container IP directly; see "docker API allow-list".
 - `docker-proxy-net` holds `docker-api-filter` and `zenvora-admin`. The filter
   forwards only `GET /containers/json` (the one call zenvora-admin makes) and
   returns 403 for everything else; see "docker API allow-list" below.
@@ -239,27 +240,66 @@ the test instead of quietly growing an unbounded log.
 
 `docker-api-filter` (nginx, config in `nginx/docker-api-filter/nginx.conf`)
 sits between `zenvora-admin` and `docker-socket-proxy`. It forwards
-`GET /containers/json` with its query string to a fixed upstream path and
+`GET /containers/json` to a fixed upstream request,
+`/containers/json?all=true` (the client's query string is dropped, so e.g.
+`?size=true` cannot make Docker size every container's filesystem), and
 returns 403 for every other path or method. If zenvora-admin ever needs another
 Docker endpoint, add that exact path to the filter -- never widen it to a
 prefix, and never put `zenvora-admin` back on `docker-socket-net`.
 
-Rolling it out (all three together, so no old container keeps the
-`docker-socket-proxy` name on `docker-proxy-net`):
+`zenvora-admin` waits for the filter's healthcheck (a request through the
+filter to the raw proxy), so a broken filter or unreachable proxy fails
+`docker compose up` instead of deploying: zenvora-admin's own `/healthz` does
+not cover Docker access and would call a broken filter healthy.
+
+**The first zenvora-admin deploy after this lands applies the change
+unattended.** Its CI deploy runs `git pull` + `docker compose up -d
+zenvora-admin`, which creates `docker-api-filter` and recreates
+`docker-socket-proxy` on its new network. Do not leave that to the next
+zenvora push: right after merging, run the rollout and probes below by hand.
 
 ```bash
-cd /opt/homelab-infra
+cd /opt/homelab-infra && git pull --ff-only
+# 1. Syntax-check the filter config before anything is recreated.
+docker run --rm -v "$PWD/nginx/docker-api-filter/nginx.conf:/etc/nginx/nginx.conf:ro" \
+  nginx:1.27-alpine nginx -t
+# 2. Recreate all three together, so no old container keeps the
+#    docker-socket-proxy name on docker-proxy-net.
 docker compose up -d --force-recreate docker-socket-proxy docker-api-filter zenvora-admin
-# zenvora-admin's image (oven/bun slim) has no curl/wget, so probe with bun.
-# Expect: 200 for the first path, 403 for every other one.
+docker inspect -f '{{.State.Health.Status}}' homelab-docker-api-filter   # expect: healthy
+# 3. From zenvora-admin (oven/bun slim has no curl/wget, so probe with bun).
+#    Expect 200 for the first path, 403 for every other one.
 for path in '/containers/json?all=true' /containers/homelab-nginx/json \
             '/containers/homelab-nginx/archive?path=/etc/hostname' \
             '/containers/x/..%2F..%2Fcontainers/homelab-nginx/json' /info; do
   docker exec -e P="$path" homelab-zenvora-admin \
     bun -e 'const r = await fetch("http://docker-socket-proxy:2375" + process.env.P); console.log(r.status, process.env.P)'
 done
-# The admin panel's Deployment Drift section should still list containers.
+# 4. From the host itself -- i.e. what any network_mode: host container can do.
+#    Bypasses the filter and talks to the raw proxy's container IP.
+PROXY_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' homelab-docker-socket-proxy | awk '{print $1}')
+curl -s -o /dev/null -m 5 -w '%{http_code}\n' "http://$PROXY_IP:2375/containers/homelab-nginx/json"
+#    Anything other than 200 (000 = unreachable) means the host path is closed.
+# 5. The admin panel's Deployment Drift section should still list containers.
 ```
+
+If step 4 prints `200`, the host-network services can bypass the filter (this
+was already true before the filter, when the proxy sat on docker-proxy-net).
+Candidate mitigations, none applied because none can be verified off-host:
+
+- **Take the raw proxy off TCP.** Drop tecnativa and have the filter talk to the
+  Docker socket itself (`proxy_pass http://unix:/var/run/docker.sock:`), with
+  the socket mounted only into the filter. Needs the nginx workers to be able
+  to open the socket (root:docker 0660), e.g. `user nginx docker;` with the
+  host's docker GID -- the allow-list then becomes the only guard, so it needs
+  the same probes.
+- **Host firewall.** An iptables rule in `DOCKER-USER` does not see host ->
+  container traffic; it needs an `OUTPUT` rule, e.g.
+  `iptables -I OUTPUT -d <docker-socket-net subnet> -p tcp --dport 2375 -j REJECT`
+  (pin the subnet in compose with `ipam` so the rule stays valid), persisted
+  with the host's firewall tooling. Container-to-container traffic from the
+  filter goes through the bridge, not OUTPUT, so it is unaffected -- verify
+  with steps 3 and 4.
 
 The list response still carries each container's name, image, state, labels,
 mounts and command line -- not env or files. Nothing here passes secrets on a
