@@ -69,20 +69,57 @@ The organization is spelled `ZenvoraAI`, but every image reference here says
 it outright with `repository name must be lowercase`, before the request ever
 reaches the registry.
 
-Four services accept a pinned tag so a deploy can name the exact image it built
-rather than racing `:latest`:
+Every service image is pinned, and none can fall back to a moving tag.
+`docker-compose.yml` names each image through a **required** variable
+(`${VAR:?…}`): with the variable unset, every `docker compose` command fails
+rather than pulling `:latest`/`:release`. Compose fails the *whole* project on
+any unset one, even `docker compose pull <other-service>`.
 
-| Variable | Service | Default |
+| Variable | Service(s) | Value |
 | --- | --- | --- |
-| `GHCR_OWNER` | all | `zenvoraai` |
-| `FAMILY_API_TAG` | `api` | `latest` |
-| `SECUREVAULT_API_TAG` | `securevault-api` | `latest` |
-| `MEMORIAL_API_TAG` | `memorial-api` | `latest` |
-| `MEMORIAL_WORKER_TAG` | `memorial-worker` | `latest` |
-| `ZENVORA_ADMIN_TAG` | `zenvora-admin` | `latest` |
+| `GHCR_OWNER` | GHCR services | namespace, default `zenvoraai` |
+| `NGINX_IMAGE` | `nginx`, `docker-api-filter` | `nginx:<tag>@sha256:<digest>` |
+| `DOCKER_SOCKET_PROXY_IMAGE` | `docker-socket-proxy` | `tecnativa/docker-socket-proxy:<tag>@sha256:<digest>` |
+| `FAMILY_API_TAG` | `api` | tag of `family-media-api` |
+| `SECUREVAULT_API_TAG` | `securevault-api` | tag of `securevault-api` |
+| `DAYANDYOU_STAGING_TAG` | `dayandyou-staging` | tag of `dayandyou` |
+| `DAYANDYOU_PROD_TAG` | `dayandyou-prod` | tag of `dayandyou` |
+| `MEMORIAL_API_TAG` | `memorial-api` | tag of `aiqiuqi-memorial-api` |
+| `MEMORIAL_WORKER_TAG` | `memorial-worker` | tag of `aiqiuqi-memorial-worker` |
+| `ZENVORA_ADMIN_TAG` | `zenvora-admin` | tag of `zenvora-admin` |
 
-Day and You pins by channel instead — `dayandyou:release` and
-`dayandyou:staging` — so it has no tag variable.
+A `*_TAG` value is a 40-hex commit SHA, optionally followed by
+`@sha256:<digest>`, or any tag *with* a digest (`release@sha256:…`). A
+third-party `*_IMAGE` value must carry a digest. `scripts/image-pins.sh`
+refuses anything else.
+
+Where the values live: the gitignored project `.env` in `/opt/homelab-infra`,
+which Compose reads on its own, plus one known-good history file per variable
+under `.image-pins/`. Only `scripts/image-pins.sh` writes either. A deploy
+exports the value it just built; the shell beats `.env`. **Only after the
+health check passes** does it run `image-pins.sh promote <service> <sha>`,
+which pins the pulled image's digest into `.env` and appends it to the history.
+So `.env` always names the last known-good release:
+
+- A failed deploy rolls back by exporting `$(scripts/image-pins.sh get
+  <service>)` (or unsetting its variable) and running `up` again. It never
+  retags `:release` locally, which would last only until the next pull.
+- A release that went bad after it passed: `scripts/image-pins.sh rollback
+  <service>` re-pins the previous known-good value and drops the bad one from
+  the history. It changes state only. Then recreate the service with its
+  environment. dayandyou and securevault get their secrets from their deploy
+  shell, so re-run that product's deploy, or `up` from a shell that has them.
+- A manual or recovery `docker compose pull`/`up` gets exactly the pinned
+  digest.
+
+`scripts/image-pins.sh check` lists every value. `scripts/image-pins.sh seed`
+pins each unset variable to the digest its container runs now (one-off, at
+rollout; it never overwrites).
+
+Third-party images are pinned on the host, not in git. Their digests could not
+be resolved when this was written. To move them into git later, replace the
+`${NGINX_IMAGE:?…}` reference with the literal `nginx:<tag>@sha256:<digest>`;
+`tests/verify-image-pinning.sh` accepts either form.
 
 ## Normal deployment model
 
@@ -96,12 +133,13 @@ git pull --ff-only
 export FAMILY_API_TAG=<the sha this run built>   # or the service's own tag var
 docker compose pull <service>
 docker compose up -d <service>
+# after the health check passes:
+scripts/image-pins.sh promote <service> "$FAMILY_API_TAG"
+scripts/docker-prune.sh || true    # best-effort, see scripts/ below
 ```
 
-Pass the tag the run just built rather than letting it default to `latest`.
-`:latest` moves, so a deploy that pulls it can ship an image a different run
-pushed a moment earlier — the deploy reports success for a release it did not
-build.
+Pass the tag the run just built. Do not promote before the health check: a
+failed release must never become the value `.env` falls back to.
 
 For an existing service, never run an unqualified `docker compose up -d` during
 a product deploy. It risks restarting unrelated sites. The application workflow
@@ -191,7 +229,8 @@ file on disk breaks nothing. Validate, then recreate.
 
 | Script | What it does |
 | --- | --- |
-| `docker-prune.sh` | Removes images no container references and older than 30 days. Deploys pin exact commit-SHA tags, so every deploy across every project leaves a tagged image behind for ever; unchecked, that fills the disk. The 30-day floor keeps a recent rollback target reachable. |
+| `docker-prune.sh` | Keeps, per service, the image `.env` pins plus the newest `IMAGE_KEEP_GOOD` (default 3) known-good releases from `.image-pins/`. Removes every other image of the repositories it manages, plus dangling layers. That is the rollback window. It removes nothing while any service is unpinned, never touches other repositories, and `DRY_RUN=1` previews. Product deploys call it instead of an age-based `docker image prune -af --filter until=48h`, which deleted other products' previous releases. |
+| `image-pins.sh` | `seed`, `check`, `get`, `promote`, `rollback`: the only writer of the pinned image values (see Images and tags). |
 | `refresh-memorial-aws-credentials.sh` | Pulls the memorial API and worker AWS credentials from SSM Parameter Store into their env files. |
 | `refresh-memorial-secrets.sh` | Pulls the CloudFront media signing key pair from SSM into the memorial API env file. |
 | `refresh-zenvora-admin-secrets.sh` | Pulls zenvora-admin's 14 secrets from SSM into its env file: GitHub App credentials, SES SMTP credentials, token-encryption key, whitelisted user ID, plus three tokens for external read-only APIs (a fine-grained GitHub alert-check PAT covering all ZenvoraAI-owned tracked repos, a classic PAT for GHCR package listing since neither GitHub Apps nor fine-grained PATs expose an org-level Packages permission, and a Cloudflare API token scoped to the three onboarded zones for the traffic/security-events panel). Same pattern as the memorial scripts, for the same reason. |
@@ -230,6 +269,8 @@ bash tests/verify-nginx-server-tokens.sh    # nginx does not advertise its versi
 bash tests/verify-docker-api-allowlist.sh   # zenvora-admin reaches only GET /containers/json
 bash tests/verify-cloudflare-real-ip.sh      # the Cloudflare real-IP config exists and is well-formed
 bash tests/verify-admin-dayandyou-hardening.sh  # admin.valtou.com and dayandyou.com carry rate limits + security headers
+bash tests/verify-image-pinning.sh           # every image is digest-pinned or a required env ref
+bash tests/verify-image-pins-script.sh       # pin/rollback/prune behaviour, stubbed docker
 ```
 
 `verify-container-log-limits.sh` asserts per service rather than grepping for
@@ -262,7 +303,7 @@ zenvora push: right after merging, run the rollout and probes below by hand.
 cd /opt/homelab-infra && git pull --ff-only
 # 1. Syntax-check the filter config before anything is recreated.
 docker run --rm -v "$PWD/nginx/docker-api-filter/nginx.conf:/etc/nginx/nginx.conf:ro" \
-  nginx:1.27-alpine nginx -t
+  "$(scripts/image-pins.sh get nginx)" nginx -t
 # 2. Recreate all three together, so no old container keeps the
 #    docker-socket-proxy name on docker-proxy-net.
 docker compose up -d --force-recreate docker-socket-proxy docker-api-filter zenvora-admin
@@ -360,7 +401,8 @@ normal maintenance.
 
 ## Onboarding a new service
 
-1. Add the Compose service, image, `mem_limit`, `logging: *default-logging`,
+1. Add the Compose service, a required image ref (`${NEW_TAG:?…}`) plus its
+   row in `pins_table` (scripts/lib/image-pins-lib.sh), `mem_limit`, `logging: *default-logging`,
    and any needed nginx server block in this repository. Do not put secrets in
    Compose. Subtract the new limit from the memory budget above before choosing
    it — the host is already oversubscribed.
@@ -369,7 +411,10 @@ normal maintenance.
    without a `logging:` key.
 3. Merge and pull this repository on the host.
 4. Ensure the product repository's workflow builds/pushes its image under
-   `ghcr.io/zenvoraai/`, passes the built SHA as the service's tag variable, and
+   `ghcr.io/zenvoraai/`, passes the built SHA as the service's tag variable,
+   runs `scripts/image-pins.sh promote` after its health check, then
+   `scripts/image-pins.sh promote`/`seed` once on the host before anything else
+   pulls this repository (an unset variable stops every compose command), and
    starts only its named service.
 5. Add its hostname to the Certbot webroot procedure and verify a local ACME
    probe before requesting a certificate.
