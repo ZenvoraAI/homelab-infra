@@ -55,6 +55,38 @@ several services peaking together is an OOM, not a slowdown. Check
 `docker stats --no-stream` before raising any limit, and treat the total as the
 budget being spent rather than headroom being claimed.
 
+### Memory budget (proposal, 2026-10-31; no limit changed)
+
+The only measurement on record is 2026-08-16 (`docs/superpowers/specs/2026-08-16-zenvora-admin-design.md`):
+every container together used about 660 MB, and memorial-api sat at
+171.9/192 MiB. That supports no reduction, so none is made here. Native
+Postgres shares the same 1.9 GiB and has no ceiling at all, which is what an
+oversubscribed OOM puts at risk.
+
+| Service | Limit now | Known usage | Proposal |
+| --- | ---: | --- | --- |
+| api (family-media) | 640m | not measured | measure peak during an upload/video poster run; set ~1.5x peak |
+| securevault-api | 256m | not measured | branch `fix/securevault-api-memory` raises it to 384m (argon2, 2 x 64 MiB) |
+| dayandyou-prod | 400m | not measured | measure; Next.js `next start` baseline is typically 150-250 MB |
+| dayandyou-staging | 350m | not measured | first candidate for a cut (staging traffic); measure, then ~1.5x peak |
+| memorial-api | 192m | 171.9 MiB (89.5%) | keep or raise slightly; it is the one near its ceiling |
+| memorial-worker | 512m | not measured (raised for 50 MP photos, d864df6) | keep |
+| nginx / filter / proxy / zenvora-admin | 64m / 16m / 16m / 128m | small | keep |
+| **Total** | **2574 MiB** (2702 with the securevault branch) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
+
+To gather the evidence (host, read-only, run over a normal week including a
+deploy and a photo upload):
+
+```bash
+# every 5 minutes; keep the max per container
+docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' >> /var/log/homelab-mem.log
+free -m; ps -o rss=,cmd= -C postgres | awk '{s+=$1} END {print s/1024 " MiB postgres"}'
+```
+
+Until then, an OOM-ordering safety net is worth considering (not applied):
+`oom_score_adj: 500` on dayandyou-staging and memorial-worker, so the kernel
+kills those before Postgres or a production API.
+
 ## Images and tags
 
 Images come from GHCR under the `zenvoraai` namespace. The application
