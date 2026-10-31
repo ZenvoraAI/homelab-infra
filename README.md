@@ -337,6 +337,7 @@ bash tests/verify-image-pinning.sh           # every image is digest-pinned or a
 bash tests/verify-image-pins-script.sh       # pin/rollback/prune behaviour, stubbed docker
 bash tests/verify-nginx-image-branch.sh      # nginx fallback is a digest-pinned, supported stable branch
 bash tests/verify-nginx-default-server.sh    # unknown Host/SNI: 444 / handshake rejected, never the admin vhost
+bash tests/verify-container-hardening.sh     # no-new-privileges / cap_drop / read_only where verified
 bash tests/verify-securevault-api-env.sh     # securevault-api receives the extension sign-in vars
 ```
 
@@ -412,6 +413,29 @@ Candidate mitigations, none applied because none can be verified off-host:
 The list response still carries each container's name, image, state, labels,
 mounts and command line -- not env or files. Nothing here passes secrets on a
 command line.
+
+## Container hardening
+
+Applied only where the product's Dockerfile and runtime code (origin/main,
+2026-10-31) show it is safe; `tests/verify-container-hardening.sh` pins it.
+
+| Service | no-new-privileges | cap_drop ALL | read_only | Evidence / why not |
+| --- | --- | --- | --- | --- |
+| api (family-media) | yes | yes | no | `USER node`, CMD `node`. Writes local storage (`lib/storage/local.ts`) and `os.tmpdir()` (video posters); which paths are live in prod is in the host env file, not verifiable here |
+| securevault-api | yes | yes | no | `USER node`. The deploy runs `npm run db:sync` in this service's config, and npm writes `~/.npm` |
+| dayandyou-staging/prod | yes | yes | no | `USER node`, `next start` writes `.next` at runtime (image cache, ISR) |
+| memorial-api | yes | yes | **yes**, `/tmp` tmpfs 16m | `USER node`; `apps/api/src` only reads files; migrations run outside the container; Prisma 7 has no engine binary |
+| memorial-worker | yes | yes | no | `USER node`; ffmpeg/HEIF processing of 50 MP photos needs scratch space too large for a RAM tmpfs |
+| zenvora-admin | yes | yes | no | `USER bun`; writes only `/app/data` (volume), but Bun's runtime cache behaviour on a read-only root was not verified |
+| nginx, docker-api-filter, docker-socket-proxy | yes | no | no | start as root (worker user switch, socket access); capability needs not verifiable without running the images |
+
+A non-root process has no effective capabilities, so `cap_drop: [ALL]` changes
+nothing for the app itself; it removes what a privilege escalation could pick up
+(NET_RAW on the host interfaces, with host networking). Applies on each
+service's next recreate. Next steps, each needing a host test: `read_only` for
+zenvora-admin and securevault-api (with a `/home/node` tmpfs for npm), and
+`cap_drop: [ALL]` + `cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]` for
+nginx (`docker compose up -d --no-deps nginx` and probe every site).
 
 ## Container logs are bounded in two places
 
