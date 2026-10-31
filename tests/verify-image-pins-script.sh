@@ -244,6 +244,16 @@ lockrun() {  # runs seed in the background against a fresh, empty .env
   pid=$!
   for _ in $(seq 50); do [ -s "$TMP/sig/.lock/pid" ] && break; sleep 0.1; done
 }
+# A holder killed between mkdir and writing its PID leaves an empty lock: it is
+# reclaimed once older than a minute, and waited on while fresh.
+mkdir -p "$TMP/empty"; mkdir "$TMP/empty/.lock"
+if IMAGE_PINS_ENV_FILE="$TMP/empty.env" IMAGE_PINS_STATE_DIR="$TMP/empty" "$PINS" promote dayandyou-prod "$SHA1" >/dev/null 2>&1; then
+  fail "promote took a fresh lock that has no PID yet"
+fi
+touch -t 202001010000 "$TMP/empty/.lock"
+IMAGE_PINS_ENV_FILE="$TMP/empty.env" IMAGE_PINS_STATE_DIR="$TMP/empty" "$PINS" promote dayandyou-prod "$SHA1" >/dev/null 2>"$TMP/empty.err" \
+  || fail "an old lock with no PID blocked promote for ever:\n$(cat "$TMP/empty.err")"
+
 rm -rf "$TMP/sig"; : >"$TMP/sig.env"; touch "$FIX/slow"
 lockrun
 [ "$(cat "$TMP/sig/.lock/pid" 2>/dev/null)" = "$pid" ] || fail "the lock does not record its holder's PID ($pid)"

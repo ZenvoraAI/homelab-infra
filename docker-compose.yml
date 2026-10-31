@@ -112,8 +112,10 @@ services:
       - PASSWORD_RESET_PATH
       # Browser-extension sign-in (/api/auth/extension/*). SecureVault's deploy
       # exports EXTENSION_IDS from the PRODUCTION_EXTENSION_IDS secret and derives
-      # ALLOWED_EXTENSION_ORIGINS (chrome-extension://<id>) from it; compose only
-      # forwards names listed here, and CORS refuses an unlisted extension origin.
+      # ALLOWED_EXTENSION_ORIGINS (chrome-extension://<id>) from it -- once its
+      # branch fix/fix-all-2026-10-31 is merged; until then both are unset and
+      # the pass-through is a no-op. Compose only forwards names listed here,
+      # and CORS refuses an unlisted extension origin.
       - EXTENSION_IDS
       - ALLOWED_EXTENSION_ORIGINS
     mem_limit: 256m

@@ -176,6 +176,13 @@ pins_lock() {
       rm -rf "$PINS_STATE_DIR/.lock"
       continue
     fi
+    # No PID: the holder died between mkdir and writing it. A live holder
+    # writes it immediately, so an empty lock older than a minute is stale.
+    if [ -z "$_holder" ] && [ -n "$(find "$PINS_STATE_DIR/.lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+      echo "image-pins: clearing a stale lock with no holder PID" >&2
+      rm -rf "$PINS_STATE_DIR/.lock"
+      continue
+    fi
     _tries=$((_tries + 1))
     [ "$_tries" -lt "${PINS_LOCK_TRIES:-60}" ] || { echo "image-pins: could not take $PINS_STATE_DIR/.lock" >&2; return 1; }
     sleep 1
