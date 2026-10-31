@@ -35,11 +35,13 @@ x-logging: &default-logging
 # edit; the default is the answer in every case today.
 services:
   nginx:
-    image: nginx:1.27-alpine
+    image: ${NGINX_IMAGE:-nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949}
     container_name: homelab-nginx
     network_mode: host
     restart: unless-stopped
     logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
@@ -52,6 +54,11 @@ services:
     network_mode: host
     restart: unless-stopped
     logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # Non-root image (USER node/bun); see README "Container hardening".
+    cap_drop:
+      - ALL
     volumes:
       - /opt/secrets/family-media/.env:/app/.env:ro
     mem_limit: 640m
@@ -61,6 +68,11 @@ services:
     network_mode: host
     restart: unless-stopped
     logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # Non-root image (USER node/bun); see README "Container hardening".
+    cap_drop:
+      - ALL
     environment:
       - NODE_ENV
       - PORT
@@ -98,13 +110,26 @@ services:
       - SMTP_PASS
       - EMAIL_FROM
       - PASSWORD_RESET_PATH
+      # Browser-extension sign-in (/api/auth/extension/*). SecureVault's deploy
+      # exports EXTENSION_IDS from the PRODUCTION_EXTENSION_IDS secret and derives
+      # ALLOWED_EXTENSION_ORIGINS (chrome-extension://<id>) from it -- once its
+      # branch fix/fix-all-2026-10-31 is merged; until then both are unset and
+      # the pass-through is a no-op. Compose only forwards names listed here,
+      # and CORS refuses an unlisted extension origin.
+      - EXTENSION_IDS
+      - ALLOWED_EXTENSION_ORIGINS
     mem_limit: 256m
   dayandyou-staging:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:staging
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_STAGING_TAG:-staging}
     container_name: homelab-dayandyou-staging
     network_mode: host
     restart: unless-stopped
     logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # Non-root image (USER node/bun); see README "Container hardening".
+    cap_drop:
+      - ALL
     environment:
       - NODE_ENV
       - PORT
@@ -138,11 +163,16 @@ services:
       - CRON_SECRET
     mem_limit: 350m
   dayandyou-prod:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:release
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_PROD_TAG:-release}
     container_name: homelab-dayandyou-prod
     network_mode: host
     restart: unless-stopped
     logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # Non-root image (USER node/bun); see README "Container hardening".
+    cap_drop:
+      - ALL
     environment:
       - NODE_ENV
       - PORT
@@ -178,6 +208,15 @@ services:
     network_mode: host
     restart: unless-stopped
     logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # Non-root image (USER node/bun); see README "Container hardening".
+    cap_drop:
+      - ALL
+    # Runtime code only reads files; migrations run outside the container.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
     env_file:
       - /opt/secrets/aiqiuqi-memorial/api.env
     mem_limit: 192m
@@ -187,33 +226,45 @@ services:
     network_mode: host
     restart: unless-stopped
     logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # Non-root image (USER node/bun); see README "Container hardening".
+    cap_drop:
+      - ALL
     env_file:
       - /opt/secrets/aiqiuqi-memorial/worker.env
     mem_limit: 512m
   # CONTAINERS=1 permits the whole /containers/* GET surface in this proxy image
   # (list/inspect, but also logs/top/export/archive across all containers on
-  # the host), not just the /containers/json listing zenvora-admin's own code
-  # calls — there is no finer-grained flag in tecnativa/docker-socket-proxy to
-  # restrict this further, and a bespoke allow-list reverse-proxy in front of a
-  # single internal sidecar is disproportionate complexity here. Accepted as a
-  # residual risk given zenvora-admin's own attack surface is minimal (no file
-  # uploads, no arbitrary command execution paths, one unauthenticated route
-  # pair for the OAuth callback) — written down explicitly so it's a known,
-  # chosen tradeoff rather than an oversight.
+  # the host) -- there is no finer-grained flag in tecnativa/docker-socket-proxy.
+  # inspect returns every container's Config.Env (every secret passed via
+  # environment:/env_file:), and archive reads any file inside any container
+  # (e.g. family-media's mounted .env), so this proxy alone would hand every
+  # secret on the host to whoever compromised zenvora-admin.
   #
-  # Not published to the host at all (no `ports:`): every other service here
-  # uses network_mode: host, which puts them all on the host's own network
-  # stack, so a port merely bound to 127.0.0.1 is reachable from every one of
-  # them, not just zenvora-admin -- a compromise of the lowest-trust container
-  # on the box (e.g. a public storefront) could otherwise reach this proxy and
-  # inspect every sibling container's env vars, i.e. read out every secret on
-  # the host. Reachable only via the private `docker-proxy-net` bridge network
-  # below, shared with nothing except zenvora-admin.
+  # zenvora-admin calls exactly one endpoint, GET /containers/json?all=true
+  # (zenvora-admin src/deployment/dockerProxy.ts). So zenvora-admin no longer
+  # shares a network with this proxy: it sits alone with docker-api-filter on
+  # the internal docker-socket-net, and docker-api-filter (below) forwards only
+  # that one request.
+  #
+  # Not published to the host (no `ports:`), so it is not on 127.0.0.1. That
+  # is NOT the same as unreachable from the host-network services: they share
+  # the host's network namespace, and on Linux the host can usually connect
+  # to a bridge container's own IP directly (host -> container goes through
+  # OUTPUT, not FORWARD, so Docker's isolation and `internal:` rules do not
+  # apply). A compromised host-network container could then call this proxy's
+  # full CONTAINERS=1 surface at <container IP>:2375, bypassing the filter.
+  # That was equally true before the filter existed. Verify on the host with
+  # the probe in README "docker API allow-list"; the candidate mitigations are
+  # listed there, none applied yet.
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3
+    image: ${DOCKER_SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:0.3@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2}
     container_name: homelab-docker-socket-proxy
     restart: unless-stopped
     logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
     environment:
       - CONTAINERS=1
       - POST=0
@@ -226,9 +277,53 @@ services:
       - NETWORKS=0
       - VOLUMES=0
     networks:
-      - docker-proxy-net
+      docker-socket-net:
+        # The filter's upstream name. Distinct from the service name because
+        # docker-api-filter answers to "docker-socket-proxy" on
+        # docker-proxy-net; reusing that name here would make the filter
+        # resolve itself.
+        aliases:
+          - docker-socket-upstream
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 16m
+  # Allow-list in front of docker-socket-proxy: forwards GET /containers/json
+  # and returns 403 for everything else (nginx/docker-api-filter/nginx.conf).
+  # Same image as the public nginx, so no new image to trust or pull.
+  #
+  # It answers to "docker-socket-proxy" on docker-proxy-net, so zenvora-admin's
+  # existing DOCKER_PROXY_URL=http://docker-socket-proxy:2375 now lands here
+  # with no host-side env edit. All three services must be recreated together
+  # (see README "docker API allow-list"): while an old docker-socket-proxy
+  # container is still attached to docker-proxy-net, that name resolves to
+  # both.
+  docker-api-filter:
+    image: ${NGINX_IMAGE:-nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949}
+    container_name: homelab-docker-api-filter
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      docker-proxy-net:
+        aliases:
+          - docker-socket-proxy
+      docker-socket-net: {}
+    volumes:
+      - ./nginx/docker-api-filter/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - docker-socket-proxy
+    # Goes through the filter to the raw proxy: nginx answers 502 when the
+    # upstream is unreachable, and busybox wget exits non-zero on that (and on
+    # a 403 from a broken allow-list). zenvora-admin waits on this, so a broken
+    # filter fails `docker compose up` loudly -- zenvora-admin's own /healthz
+    # does not cover docker access and would report a broken filter healthy.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2375/containers/json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     mem_limit: 16m
   zenvora-admin:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/zenvora-admin:${ZENVORA_ADMIN_TAG:-latest}
@@ -255,8 +350,14 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # Non-root image (USER node/bun); see README "Container hardening".
+    cap_drop:
+      - ALL
     depends_on:
-      - docker-socket-proxy
+      docker-api-filter:
+        condition: service_healthy
     # No environment: block at all — everything, including the non-secret
     # PORT, lives in env_file, matching the memorial-api/memorial-worker
     # pattern above. A bare `environment: - PORT` passthrough would resolve
@@ -269,12 +370,13 @@ services:
     #
     # Two values in that env_file must be updated on the host, by hand:
     # DOCKER_PROXY_URL from http://127.0.0.1:2375 to
-    # http://docker-socket-proxy:2375 -- Compose's embedded DNS resolves the
-    # service name on docker-proxy-net now that the proxy is no longer on the
-    # host's loopback -- and NGINX_ORIGIN_HOST from 127.0.0.1 to
+    # http://docker-socket-proxy:2375 -- Compose's embedded DNS resolves that
+    # name on docker-proxy-net (since the docker API allow-list it is
+    # docker-api-filter's alias there, with no further env edit) -- and
+    # NGINX_ORIGIN_HOST from 127.0.0.1 to
     # host.docker.internal, per the extra_hosts comment above. This repo
     # change alone does nothing until both host-side edits and a
-    # `docker compose up -d --force-recreate docker-socket-proxy zenvora-admin`
+    # `docker compose up -d --force-recreate docker-socket-proxy docker-api-filter zenvora-admin`
     # all happen.
     env_file:
       - /opt/secrets/zenvora-admin/.env
@@ -285,3 +387,8 @@ services:
 networks:
   docker-proxy-net:
     driver: bridge
+  # Only docker-socket-proxy and docker-api-filter. internal: no route out,
+  # and nothing that faces the internet is attached.
+  docker-socket-net:
+    driver: bridge
+    internal: true
