@@ -337,6 +337,7 @@ bash tests/verify-image-pinning.sh           # every image is digest-pinned or a
 bash tests/verify-image-pins-script.sh       # pin/rollback/prune behaviour, stubbed docker
 bash tests/verify-nginx-image-branch.sh      # nginx fallback is a digest-pinned, supported stable branch
 bash tests/verify-nginx-default-server.sh    # unknown Host/SNI: 444 / handshake rejected, never the admin vhost
+bash tests/verify-securevault-api-env.sh     # securevault-api receives the extension sign-in vars
 ```
 
 `verify-container-log-limits.sh` asserts per service rather than grepping for

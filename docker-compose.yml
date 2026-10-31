@@ -98,6 +98,12 @@ services:
       - SMTP_PASS
       - EMAIL_FROM
       - PASSWORD_RESET_PATH
+      # Browser-extension sign-in (/api/auth/extension/*). SecureVault's deploy
+      # exports EXTENSION_IDS from the PRODUCTION_EXTENSION_IDS secret and derives
+      # ALLOWED_EXTENSION_ORIGINS (chrome-extension://<id>) from it; compose only
+      # forwards names listed here, and CORS refuses an unlisted extension origin.
+      - EXTENSION_IDS
+      - ALLOWED_EXTENSION_ORIGINS
     mem_limit: 256m
   dayandyou-staging:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_STAGING_TAG:-staging}
