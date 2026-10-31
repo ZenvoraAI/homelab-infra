@@ -76,8 +76,9 @@ Every service image is named through a pin variable, in one of two modes
 - **transition** (now): `${VAR:-<fallback>}`. An unset variable falls back to
   exactly what that service ran before pinning: `:latest`/`:release`/`:staging`
   for the app images (moving, as before) and a digest-pinned
-  `nginx:1.27-alpine` / `tecnativa/docker-socket-proxy:0.3` for the
-  third-party ones. `image-pins.sh check` lists what is still falling back.
+  `nginx:1.30.6-alpine` / `tecnativa/docker-socket-proxy:0.3` for the
+  third-party ones (nginx moved off the end-of-life 1.27 branch; see "nginx
+  version" below). `image-pins.sh check` lists what is still falling back.
 - **strict** (after rollout): `${VAR:?…}`. With any variable unset, every
   `docker compose` command fails rather than pulling a moving tag.
 
@@ -156,6 +157,33 @@ exported `*_TAG` beats `.env`).
 4. Land the product patches (promote after health, `docker-prune.sh` instead
    of the 48h prune, dayandyou rollback via `get`), one product at a time.
 5. Only then merge the strict branch.
+
+### nginx version
+
+The fallback is `nginx:1.30.6-alpine@sha256:0e52bd05…` (1.30 is the current
+stable branch; 1.27 and 1.28 no longer get fixes).
+`tests/verify-nginx-image-branch.sh` refuses a mainline or end-of-life
+branch. Config checked with nginx 1.30.6 built from nginx.org source: `nginx -t`
+passes for `nginx/nginx.conf` + `conf.d` and for the docker-api-filter config.
+
+On a host where `seed` already pinned `NGINX_IMAGE` (the running 1.27), the
+fallback is not used; move it explicitly. **Recreating `nginx` restarts the
+only public listener: every site drops for a few seconds**, so pick a quiet
+moment and keep the old ref to hand:
+
+```bash
+cd /opt/homelab-infra
+NEW='nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949'
+docker pull "$NEW"
+docker run --rm -v "$PWD/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" -v "$PWD/nginx/conf.d:/etc/nginx/conf.d:ro" \
+  -v /etc/letsencrypt:/etc/letsencrypt:ro "$NEW" nginx -t
+docker run --rm -v "$PWD/nginx/docker-api-filter/nginx.conf:/etc/nginx/nginx.conf:ro" "$NEW" nginx -t
+OLD="$(scripts/image-pins.sh get nginx)"; echo "rollback target: $OLD"
+scripts/image-pins.sh promote nginx "$NEW"
+docker compose up -d --no-deps nginx docker-api-filter
+curl -sI https://admin.valtou.com/healthz | head -1     # and each public site
+# if anything is wrong: scripts/image-pins.sh rollback nginx "$NEW" && docker compose up -d --no-deps nginx docker-api-filter
+```
 
 ## Normal deployment model
 
@@ -307,6 +335,8 @@ bash tests/verify-cloudflare-real-ip.sh      # the Cloudflare real-IP config exi
 bash tests/verify-admin-dayandyou-hardening.sh  # admin.valtou.com and dayandyou.com carry rate limits + security headers
 bash tests/verify-image-pinning.sh           # every image is digest-pinned or a required env ref
 bash tests/verify-image-pins-script.sh       # pin/rollback/prune behaviour, stubbed docker
+bash tests/verify-nginx-image-branch.sh      # nginx fallback is a digest-pinned, supported stable branch
+bash tests/verify-nginx-default-server.sh    # unknown Host/SNI: 444 / handshake rejected, never the admin vhost
 ```
 
 `verify-container-log-limits.sh` asserts per service rather than grepping for

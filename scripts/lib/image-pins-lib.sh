@@ -36,7 +36,7 @@ PINS_COMPOSE_MODE=transition
 # the public nginx image so there is no second image to trust.
 pins_table() {
   cat <<'TABLE'
-nginx|homelab-nginx|NGINX_IMAGE|image||nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+nginx|homelab-nginx|NGINX_IMAGE|image||nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
 api|homelab-family-api|FAMILY_API_TAG|tag|family-media-api|latest
 securevault-api|homelab-securevault-api|SECUREVAULT_API_TAG|tag|securevault-api|latest
 dayandyou-staging|homelab-dayandyou-staging|DAYANDYOU_STAGING_TAG|tag|dayandyou|staging
@@ -44,7 +44,7 @@ dayandyou-prod|homelab-dayandyou-prod|DAYANDYOU_PROD_TAG|tag|dayandyou|release
 memorial-api|homelab-memorial-api|MEMORIAL_API_TAG|tag|aiqiuqi-memorial-api|latest
 memorial-worker|homelab-memorial-worker|MEMORIAL_WORKER_TAG|tag|aiqiuqi-memorial-worker|latest
 docker-socket-proxy|homelab-docker-socket-proxy|DOCKER_SOCKET_PROXY_IMAGE|image||tecnativa/docker-socket-proxy:0.3@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
-docker-api-filter|homelab-docker-api-filter|NGINX_IMAGE|image||nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+docker-api-filter|homelab-docker-api-filter|NGINX_IMAGE|image||nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
 zenvora-admin|homelab-zenvora-admin|ZENVORA_ADMIN_TAG|tag|zenvora-admin|latest
 TABLE
 }
