@@ -12,7 +12,7 @@ release workflows remain in their own repositories.
 | Compose service | Container | Host port | Public hostnames | `mem_limit` |
 | --- | --- | ---: | --- | ---: |
 | `nginx` | `homelab-nginx` | 80 / 443 | all hosts below | 64m |
-| `api` | `homelab-family-api` | 4000 | `api.family.valtou.com` | 640m |
+| `api` | `homelab-family-api` | 4000 | `family-api.valtou.com` | 640m |
 | `securevault-api` | `homelab-securevault-api` | 3000 | `api.valtou.com` | 256m |
 | `dayandyou-prod` | `homelab-dayandyou-prod` | 3003 | `dayandyou.com`, `www.dayandyou.com` | 400m |
 | `dayandyou-staging` | `homelab-dayandyou-staging` | 3002 | `staging.dayandyou.com` | 350m |
@@ -54,6 +54,25 @@ reservation, and no service sits near its own ceiling — but the arithmetic mea
 several services peaking together is an OOM, not a slowdown. Check
 `docker stats --no-stream` before raising any limit, and treat the total as the
 budget being spent rather than headroom being claimed.
+
+**Public ports (Lightsail firewall, instance `Ubuntu-1`).** 22 is open as
+before. 80 and 443 accept only Cloudflare's published ranges
+(https://www.cloudflare.com/ips-v4, https://www.cloudflare.com/ips-v6), so the
+origin cannot be reached around Cloudflare's WAF and rate limits. Every public
+hostname is proxied (orange cloud); the last DNS-only one,
+`api.family.valtou.com`, was retired on 2026-11-01. Certbot's HTTP-01
+challenge still works because Let's Encrypt reaches the webroot through
+Cloudflare. A new hostname must be proxied before it can work, and the ranges
+should be re-checked now and then (Cloudflare announces changes in advance):
+
+```bash
+v4=$(curl -fsS https://www.cloudflare.com/ips-v4 | jq -Rsc 'split("\n")|map(select(length>0))')
+v6=$(curl -fsS https://www.cloudflare.com/ips-v6 | jq -Rsc 'split("\n")|map(select(length>0))')
+aws lightsail put-instance-public-ports --instance-name Ubuntu-1 --port-infos \
+  "[{\"fromPort\":22,\"toPort\":22,\"protocol\":\"tcp\",\"cidrs\":[\"0.0.0.0/0\"],\"ipv6Cidrs\":[\"::/0\"]},
+    {\"fromPort\":80,\"toPort\":80,\"protocol\":\"tcp\",\"cidrs\":$v4,\"ipv6Cidrs\":$v6},
+    {\"fromPort\":443,\"toPort\":443,\"protocol\":\"tcp\",\"cidrs\":$v4,\"ipv6Cidrs\":$v6}]"
+```
 
 ### Memory budget (proposal, 2026-10-31; no limit changed)
 
