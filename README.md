@@ -127,7 +127,7 @@ Every service image is named through a pin variable, in one of two modes
 - **transition** (now): `${VAR:-<fallback>}`. An unset variable falls back to
   exactly what that service ran before pinning: `:latest`/`:release`/`:staging`
   for the app images (moving, as before) and a digest-pinned
-  `nginx:1.30.6-alpine` / `tecnativa/docker-socket-proxy:0.3` for the
+  `nginx:1.30.6-alpine` / `tecnativa/docker-socket-proxy:v0.5.0` for the
   third-party ones (nginx moved off the end-of-life 1.27 branch; see "nginx
   version" below). `image-pins.sh check` lists what is still falling back.
 - **strict** (after rollout): `${VAR:?…}`. With any variable unset, every
