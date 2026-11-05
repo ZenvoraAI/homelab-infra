@@ -9,6 +9,12 @@ set -euo pipefail
 #   ALLOWED_EXTENSION_ORIGINS -- without it CORS refuses the extension's
 #                                chrome-extension://<id> token exchange
 # SecureVault's deploy exports both (the second derived from the first).
+# Place photos (client-encrypted, stored in S3) need five more:
+#   OBJECT_STORE                       -- s3 turns photos on; unset or off keeps them off
+#   PHOTO_S3_BUCKET, PHOTO_S3_REGION   -- where the photos live
+#   PHOTO_S3_ACCESS_KEY_ID/SECRET_...  -- the securevault-photos IAM user (p/* only)
+# No AWS_* name may be forwarded: the host's AWS CLI runs on the deploy key,
+# which the API must never hold.
 # EXTENSION_SIGNIN_REQUIRED is deliberately absent: deploy.yml passes it only
 # to the preflight with `docker compose run -e`.
 #
@@ -16,7 +22,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="${COMPOSE_FILE_UNDER_TEST:-$ROOT/docker-compose.yml}"
-REQUIRED="EXTENSION_IDS ALLOWED_EXTENSION_ORIGINS"
+REQUIRED="EXTENSION_IDS ALLOWED_EXTENSION_ORIGINS OBJECT_STORE PHOTO_S3_BUCKET PHOTO_S3_REGION PHOTO_S3_ACCESS_KEY_ID PHOTO_S3_SECRET_ACCESS_KEY"
 
 fail() { printf 'FAIL: %b\n' "$*" >&2; exit 1; }
 
@@ -38,6 +44,7 @@ for name in $REQUIRED; do
     || fail "securevault-api environment: is missing '- $name' (bare pass-through from the deploy shell)"
 done
 printf '%s\n' "$names" | grep -q '=' && fail "securevault-api environment: must stay bare pass-through names, no values"
+printf '%s\n' "$names" | grep -q '^AWS_' && fail "securevault-api environment: must not forward any AWS_* name (deploy key stays on the host)"
 printf '%s\n' "$names" | grep -qx EXTENSION_SIGNIN_REQUIRED && fail "EXTENSION_SIGNIN_REQUIRED belongs to the preflight run only"
 
 echo "PASS: securevault-api receives $REQUIRED"

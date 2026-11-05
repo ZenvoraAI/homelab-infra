@@ -118,6 +118,17 @@ services:
       # and CORS refuses an unlisted extension origin.
       - EXTENSION_IDS
       - ALLOWED_EXTENSION_ORIGINS
+      # Place photos (client-encrypted, stored in S3 bucket
+      # valtou-vault-photos-prod). SecureVault's deploy exports all five from
+      # GitHub secrets; OBJECT_STORE unset or "off" keeps photos off, so these
+      # are a no-op until it is set to "s3". The key belongs to the IAM user
+      # securevault-photos (p/* only). Never forward any AWS_* name here: the
+      # host's AWS CLI runs on the deploy key, which the API must not hold.
+      - OBJECT_STORE
+      - PHOTO_S3_BUCKET
+      - PHOTO_S3_REGION
+      - PHOTO_S3_ACCESS_KEY_ID
+      - PHOTO_S3_SECRET_ACCESS_KEY
     mem_limit: 256m
   dayandyou-staging:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_STAGING_TAG:-staging}
