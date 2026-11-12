@@ -46,6 +46,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/securevault:/etc/nginx/securevault:ro
+      - securevault-fpm:/run/securevault-fpm:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/lib/homelab-acme:/var/www/certbot:ro
     mem_limit: 64m
@@ -76,9 +77,10 @@ services:
       - ALL
     environment: &securevault-api-env
       - NODE_ENV
-      # No PORT: PHP-FPM serves FastCGI on 127.0.0.1:9000 (the image's FPM_LISTEN
-      # default; production boot refuses a non-loopback value). Never forward
-      # FPM_LISTEN_ALLOW_NON_LOOPBACK. FPM_MAX_CHILDREN keeps the image default, 6.
+      # No PORT and no TCP at all: PHP-FPM serves FastCGI on the unix socket
+      # /run/securevault-fpm/fpm.sock (the image's FPM_LISTEN default; production
+      # boot refuses any other value). Never forward FPM_LISTEN. FPM_MAX_CHILDREN
+      # keeps the image default, 6.
       # The API sits behind this repository's nginx, so the API must trust one
       # proxy hop to see the real client IP. Without it every client collapses
       # into 127.0.0.1 and every one of SecureVault's rate limiters buckets all
@@ -132,6 +134,12 @@ services:
       - PHOTO_S3_REGION
       - PHOTO_S3_ACCESS_KEY_ID
       - PHOTO_S3_SECRET_ACCESS_KEY
+    # FastCGI has no authentication, and loopback is shared with every other
+    # host-network service here, so FPM listens on a unix socket in this volume
+    # instead of 127.0.0.1:9000. Only this service and nginx (read-only) may mount
+    # it: the mount is the access boundary (tests/verify-securevault-fpm-socket.sh).
+    volumes:
+      - securevault-fpm:/run/securevault-fpm
     # Laravel on PHP-FPM: measured peak 302 MiB (SecureVault T7 load test, 6 workers,
     # two concurrent argon2id at 64 MiB each). The theoretical ceiling, 6 x the 192M
     # PHP memory_limit, does not fit this 1.9 GiB host next to Postgres: past 512m the
@@ -424,6 +432,10 @@ services:
     volumes:
       - /opt/data/zenvora-admin:/app/data
     mem_limit: 128m
+
+volumes:
+  # SecureVault's PHP-FPM socket; see securevault-api.
+  securevault-fpm: {}
 
 networks:
   docker-proxy-net:

@@ -20,7 +20,7 @@ set -euo pipefail
 #
 # The scheduler (same image) must get exactly the same list: it runs the same
 # boot checks. It shares the API's list through the YAML anchor.
-# PORT is gone: PHP-FPM serves FastCGI on loopback, it has no HTTP port.
+# PORT is gone: PHP-FPM serves FastCGI on a unix socket, it has no HTTP port.
 #
 # Pure repo test: reads only docker-compose.yml, never any value.
 

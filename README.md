@@ -13,7 +13,7 @@ release workflows remain in their own repositories.
 | --- | --- | ---: | --- | ---: |
 | `nginx` | `homelab-nginx` | 80 / 443 | all hosts below | 64m |
 | `api` | `homelab-family-api` | 4000 | `family-api.valtou.com` | 640m |
-| `securevault-api` | `homelab-securevault-api` | 9000 (FastCGI, loopback) | `api.valtou.com` | 512m |
+| `securevault-api` | `homelab-securevault-api` | none (FastCGI on a unix socket, `securevault-fpm` volume) | `api.valtou.com` | 512m |
 | `securevault-scheduler` | `homelab-securevault-scheduler` | — | none (no listener) | 256m |
 | `dayandyou-prod` | `homelab-dayandyou-prod` | 3003 | `dayandyou.com`, `www.dayandyou.com` | 400m |
 | `dayandyou-staging` | `homelab-dayandyou-staging` | 3002 | `staging.dayandyou.com` | 350m |
