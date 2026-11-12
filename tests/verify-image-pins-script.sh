@@ -142,7 +142,7 @@ seed_container homelab-nginx nginx:1.27-alpine sha256:img-nginx "nginx@$(dg 20)"
 seed_container homelab-docker-api-filter nginx:1.27-alpine sha256:img-nginx "nginx@$(dg 20)"
 seed_container homelab-docker-socket-proxy tecnativa/docker-socket-proxy:0.3 sha256:img-dsp "tecnativa/docker-socket-proxy@$(dg 21)"
 seed_container homelab-family-api "ghcr.io/zenvoraai/family-media-api:$SHA3" sha256:img-fam "ghcr.io/zenvoraai/family-media-api@$(dg 22)"
-seed_container homelab-securevault-api ghcr.io/zenvoraai/securevault-api:latest sha256:img-sv "ghcr.io/zenvoraai/securevault-api@$(dg 23)"
+seed_container homelab-securevault-api ghcr.io/zenvoraai/securevault-api-laravel:latest sha256:img-sv "ghcr.io/zenvoraai/securevault-api-laravel@$(dg 23)"
 # Already pinned by promote above; seed must not replace it with :release.
 seed_container homelab-dayandyou-prod "$REPO:release" sha256:img-dyp "$REPO@$(dg 30)"
 seed_container homelab-dayandyou-staging "$REPO:staging" sha256:img-dys "$REPO@$(dg 24)"

@@ -26,7 +26,7 @@ COMPOSE="$COMPOSE" ruby -ryaml -e '
   doc = YAML.load(File.read(ENV.fetch("COMPOSE")))  # system ruby 2.6: aliases allowed by default
   services = doc.fetch("services")
   errors = []
-  non_root_apps = %w[api securevault-api dayandyou-staging dayandyou-prod memorial-api memorial-worker zenvora-admin]
+  non_root_apps = %w[api securevault-api securevault-scheduler dayandyou-staging dayandyou-prod memorial-api memorial-worker zenvora-admin]
   read_only = { "memorial-api" => "/tmp" }
 
   errors << "parsed only #{services.size} services" if services.size < 10

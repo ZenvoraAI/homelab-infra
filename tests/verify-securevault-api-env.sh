@@ -18,6 +18,10 @@ set -euo pipefail
 # EXTENSION_SIGNIN_REQUIRED is deliberately absent: deploy.yml passes it only
 # to the preflight with `docker compose run -e`.
 #
+# The scheduler (same image) must get exactly the same list: it runs the same
+# boot checks. It shares the API's list through the YAML anchor.
+# PORT is gone: PHP-FPM serves FastCGI on a unix socket, it has no HTTP port.
+#
 # Pure repo test: reads only docker-compose.yml, never any value.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,4 +51,13 @@ printf '%s\n' "$names" | grep -q '=' && fail "securevault-api environment: must 
 printf '%s\n' "$names" | grep -q '^AWS_' && fail "securevault-api environment: must not forward any AWS_* name (deploy key stays on the host)"
 printf '%s\n' "$names" | grep -qx EXTENSION_SIGNIN_REQUIRED && fail "EXTENSION_SIGNIN_REQUIRED belongs to the preflight run only"
 
-echo "PASS: securevault-api receives $REQUIRED"
+printf '%s\n' "$names" | grep -qx PORT && fail "securevault-api environment: PORT is an Express leftover (FPM has no HTTP port)"
+grep -q '^    environment: &securevault-api-env$' "$COMPOSE" || fail "securevault-api environment: must carry the &securevault-api-env anchor"
+sched_env="$(awk '
+  /^  securevault-scheduler:[[:space:]]*$/ { in_svc = 1; next }
+  in_svc && /^  [A-Za-z0-9_-]+:/ { in_svc = 0 }
+  in_svc && /^    environment:/ { print }
+' "$COMPOSE")"
+[ "$sched_env" = "    environment: *securevault-api-env" ] || fail "securevault-scheduler must reuse the API's environment list (environment: *securevault-api-env)"
+
+echo "PASS: securevault-api receives $REQUIRED; the scheduler shares its list"
