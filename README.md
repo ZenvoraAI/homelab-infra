@@ -13,7 +13,8 @@ release workflows remain in their own repositories.
 | --- | --- | ---: | --- | ---: |
 | `nginx` | `homelab-nginx` | 80 / 443 | all hosts below | 64m |
 | `api` | `homelab-family-api` | 4000 | `family-api.valtou.com` | 640m |
-| `securevault-api` | `homelab-securevault-api` | 3000 | `api.valtou.com` | 256m |
+| `securevault-api` | `homelab-securevault-api` | 9000 (FastCGI, loopback) | `api.valtou.com` | 512m |
+| `securevault-scheduler` | `homelab-securevault-scheduler` | — | none (no listener) | 256m |
 | `dayandyou-prod` | `homelab-dayandyou-prod` | 3003 | `dayandyou.com`, `www.dayandyou.com` | 400m |
 | `dayandyou-staging` | `homelab-dayandyou-staging` | 3002 | `staging.dayandyou.com` | 350m |
 | `memorial-api` | `homelab-memorial-api` | 3001 | `api.aiqiuqi.com` | 192m |
@@ -85,7 +86,8 @@ oversubscribed OOM puts at risk.
 | Service | Limit now | Known usage | Proposal |
 | --- | ---: | --- | --- |
 | api (family-media) | 640m | not measured | measure peak during an upload/video poster run; set ~1.5x peak |
-| securevault-api | 256m | not measured | branch `fix/securevault-api-memory` raises it to 384m (argon2, 2 x 64 MiB) |
+| securevault-api | 512m | 302 MiB peak (Laravel/FPM load test, 6 workers) | keep; FPM's own ceiling (6 x 192M) is above it by design |
+| securevault-scheduler | 256m | not measured | measure after the cutover |
 | dayandyou-prod | 400m | not measured | measure; Next.js `next start` baseline is typically 150-250 MB |
 | dayandyou-staging | 350m | not measured | first candidate for a cut (staging traffic); measure, then ~1.5x peak |
 | memorial-api | 192m | 171.9 MiB (89.5%) | keep or raise slightly; it is the one near its ceiling |
@@ -146,7 +148,7 @@ is a one-line flip plus the compose lines, kept on its own branch
 | `NGINX_IMAGE` | `nginx`, `docker-api-filter` | `nginx:<tag>@sha256:<digest>` |
 | `DOCKER_SOCKET_PROXY_IMAGE` | `docker-socket-proxy` | `tecnativa/docker-socket-proxy:<tag>@sha256:<digest>` |
 | `FAMILY_API_TAG` | `api` | tag of `family-media-api` |
-| `SECUREVAULT_API_TAG` | `securevault-api` | tag of `securevault-api` |
+| `SECUREVAULT_API_TAG` | `securevault-api`, `securevault-scheduler` | tag of `securevault-api-laravel` |
 | `DAYANDYOU_STAGING_TAG` | `dayandyou-staging` | tag of `dayandyou` |
 | `DAYANDYOU_PROD_TAG` | `dayandyou-prod` | tag of `dayandyou` |
 | `MEMORIAL_API_TAG` | `memorial-api` | tag of `aiqiuqi-memorial-api` |
@@ -275,7 +277,7 @@ Health checks on the host:
 
 ```bash
 curl -fsS http://127.0.0.1:4000/health  # family API
-curl -fsS http://127.0.0.1:3000/health  # SecureVault API
+docker compose exec -T securevault-api /usr/local/share/securevault/docker/fcgi-probe.sh /readyz  # SecureVault API (FastCGI only)
 curl -fsS http://127.0.0.1:3001/health  # memorial API
 curl -fsS http://127.0.0.1:3003/         # Day and You production
 curl -fsS http://127.0.0.1:3002/         # Day and You staging
@@ -473,7 +475,7 @@ Applied only where the product's Dockerfile and runtime code (origin/main,
 | Service | no-new-privileges | cap_drop ALL | read_only | Evidence / why not |
 | --- | --- | --- | --- | --- |
 | api (family-media) | yes | yes | no | `USER node`, CMD `node`. Writes local storage (`lib/storage/local.ts`) and `os.tmpdir()` (video posters); which paths are live in prod is in the host env file, not verifiable here |
-| securevault-api | yes | yes | no | `USER node`. The deploy runs `npm run db:sync` in this service's config, and npm writes `~/.npm` |
+| securevault-api, securevault-scheduler | yes | yes | no | `USER www-data`. Not verified on a read-only root: the deploy runs artisan one-offs (preflight, migrate) in this service's config, and Laravel writes `storage/` and `bootstrap/cache` |
 | dayandyou-staging/prod | yes | yes | no | `USER node`, `next start` writes `.next` at runtime (image cache, ISR) |
 | memorial-api | yes | yes | **yes**, `/tmp` tmpfs 16m | `USER node`; `apps/api/src` only reads files; migrations run outside the container; Prisma 7 has no engine binary |
 | memorial-worker | yes | yes | no | `USER node`; ffmpeg/HEIF processing of 50 MP photos needs scratch space too large for a RAM tmpfs |
@@ -484,7 +486,7 @@ A non-root process has no effective capabilities, so `cap_drop: [ALL]` changes
 nothing for the app itself; it removes what a privilege escalation could pick up
 (NET_RAW on the host interfaces, with host networking). Applies on each
 service's next recreate. Next steps, each needing a host test: `read_only` for
-zenvora-admin and securevault-api (with a `/home/node` tmpfs for npm), and
+zenvora-admin and securevault-api (with tmpfs for Laravel's `storage/` and `bootstrap/cache`), and
 `cap_drop: [ALL]` + `cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE]` for
 nginx (`docker compose up -d --no-deps nginx` and probe every site).
 

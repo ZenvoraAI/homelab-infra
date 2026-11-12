@@ -8,7 +8,7 @@ set -euo pipefail
 #   - nginx had no rate limit on any email-sending endpoint
 #   - TRUST_PROXY was exported by SecureVault's deploy workflow but never
 #     declared in this repository's compose file, so it never reached the
-#     container. express then saw 127.0.0.1 for every request and every one of
+#     container. The API then saw 127.0.0.1 for every request and every one of
 #     SecureVault's rate limiters bucketed all users together.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,17 +26,29 @@ require() {
 require nginx/nginx.conf 'limit_req_zone $binary_remote_addr zone=email_ep:10m rate=5r/m;'
 
 # SecureVault's two endpoints that send email without requiring a login.
-# /api/auth/password-reset is a prefix match so it covers /request and /confirm.
+# /api/auth/password-reset is an unanchored-suffix regex so it covers /request
+# and /confirm; both are case-insensitive (`~*`) because the Laravel API routes
+# /API/auth/password-reset too, so a case-sensitive location would be bypassed
+# by changing case. Regexes, not `^~` prefixes: every SecureVault location is
+# a regex now, matched in file order, and these two come before the others.
 #
-# /api/contact must be the anchored regex, NOT `= /api/contact`: express runs
-# with strict routing off, so POST /api/contact/ reaches the same handler and an
-# exact-match location is bypassed by appending one slash. Verified against
-# production before the fix: both spellings returned 400, i.e. both reached the
-# app. Asserted here so the weaker form cannot come back.
-require nginx/conf.d/valtou-api.conf 'location ^~ /api/auth/password-reset {'
-require nginx/conf.d/valtou-api.conf 'location ~ ^/api/contact/?$ {'
-grep -Fq 'location = /api/contact' "$ROOT/nginx/conf.d/valtou-api.conf" && {
-  echo 'valtou-api.conf uses an exact-match /api/contact location, which /api/contact/ bypasses' >&2
+# /api/contact must be the anchored regex, NOT `= /api/contact`: POST
+# /api/contact/ reaches the same handler, so an exact-match location is
+# bypassed by appending one slash. Asserted here so the weaker form cannot
+# come back.
+require nginx/conf.d/valtou-api.conf 'location ~* ^/api/auth/password-reset {'
+require nginx/conf.d/valtou-api.conf 'location ~* ^/api/contact/?$ {'
+grep -Eq 'location (=|\^~|~) /?\^?/api/(contact|auth/password-reset)' "$ROOT/nginx/conf.d/valtou-api.conf" && {
+  echo 'valtou-api.conf has a case-sensitive, prefix or exact-match email location, which a case change or slash bypasses' >&2
+  exit 1
+}
+
+# Those two must be the first SecureVault regexes after the /index.php guard:
+# nginx uses the first matching regex, so a broader one above them would take
+# the request without the rate limit.
+first_two="$(grep -E '^    location ~' "$ROOT/nginx/conf.d/valtou-api.conf" | sed -n '2,3p')"
+printf '%s\n' "$first_two" | grep -q 'password-reset' && printf '%s\n' "$first_two" | grep -q 'contact' || {
+  echo 'the rate-limited email locations must be the first regexes after /index.php' >&2
   exit 1
 }
 

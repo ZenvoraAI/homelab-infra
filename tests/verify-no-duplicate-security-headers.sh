@@ -22,4 +22,28 @@ for file in "$ROOT"/nginx/conf.d/*.conf; do
   done
 done
 
+# FastCGI vhosts (SecureVault's Laravel API): the hides live in the shared
+# include, because a location that sets any fastcgi_hide_header -- the include
+# does -- inherits none from its server block. A server-level fastcgi_hide_header
+# would be silently ignored (found 2026-11-11 by probing the new block).
+INCLUDE="$ROOT/nginx/securevault/fastcgi-securevault.conf"
+for file in "$ROOT"/nginx/conf.d/*.conf; do
+  grep -q 'include /etc/nginx/securevault/fastcgi-securevault.conf;' "$file" || continue
+  if grep -Eq '^    fastcgi_hide_header ' "$file"; then
+    echo "${file#"$ROOT"/}: server-level fastcgi_hide_header is ignored by the include's locations; hide in ${INCLUDE#"$ROOT"/}" >&2
+    status=1
+  fi
+  for header in X-Content-Type-Options X-Frame-Options Referrer-Policy; do
+    if grep -q "add_header $header " "$file" && ! grep -q "^fastcgi_hide_header $header;" "$INCLUDE"; then
+      echo "${file#"$ROOT"/}: adds $header but ${INCLUDE#"$ROOT"/} does not hide the API's copy" >&2
+      status=1
+    fi
+  done
+  # Every FastCGI location must go through the include, or it skips the hides.
+  if grep -Eq '^\s*fastcgi_pass ' "$file"; then
+    echo "${file#"$ROOT"/}: fastcgi_pass outside the shared include skips its header hides" >&2
+    status=1
+  fi
+done
+
 exit "$status"

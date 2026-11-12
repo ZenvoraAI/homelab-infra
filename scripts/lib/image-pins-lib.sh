@@ -34,11 +34,14 @@ PINS_COMPOSE_MODE=transition
 #   fallback   : the transition-mode compose default (see above).
 # nginx and docker-api-filter deliberately share NGINX_IMAGE: the filter reuses
 # the public nginx image so there is no second image to trust.
+# securevault-api and securevault-scheduler share SECUREVAULT_API_TAG: one image,
+# FPM in the first, the schedule in the second; SecureVault's deploy moves both.
 pins_table() {
   cat <<'TABLE'
 nginx|homelab-nginx|NGINX_IMAGE|image||nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
 api|homelab-family-api|FAMILY_API_TAG|tag|family-media-api|latest
-securevault-api|homelab-securevault-api|SECUREVAULT_API_TAG|tag|securevault-api|latest
+securevault-api|homelab-securevault-api|SECUREVAULT_API_TAG|tag|securevault-api-laravel|latest
+securevault-scheduler|homelab-securevault-scheduler|SECUREVAULT_API_TAG|tag|securevault-api-laravel|latest
 dayandyou-staging|homelab-dayandyou-staging|DAYANDYOU_STAGING_TAG|tag|dayandyou|staging
 dayandyou-prod|homelab-dayandyou-prod|DAYANDYOU_PROD_TAG|tag|dayandyou|release
 memorial-api|homelab-memorial-api|MEMORIAL_API_TAG|tag|aiqiuqi-memorial-api|latest

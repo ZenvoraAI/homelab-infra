@@ -45,6 +45,7 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/securevault:/etc/nginx/securevault:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/lib/homelab-acme:/var/www/certbot:ro
     mem_limit: 64m
@@ -63,20 +64,22 @@ services:
       - /opt/secrets/family-media/.env:/app/.env:ro
     mem_limit: 640m
   securevault-api:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api:${SECUREVAULT_API_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api-laravel:${SECUREVAULT_API_TAG:-latest}
     container_name: homelab-securevault-api
     network_mode: host
     restart: unless-stopped
     logging: *default-logging
     security_opt:
       - no-new-privileges:true
-    # Non-root image (USER node/bun); see README "Container hardening".
+    # Non-root image (USER www-data); see README "Container hardening".
     cap_drop:
       - ALL
-    environment:
+    environment: &securevault-api-env
       - NODE_ENV
-      - PORT
-      # The API sits behind this repository's nginx, so express must trust one
+      # No PORT: PHP-FPM serves FastCGI on 127.0.0.1:9000 (the image's FPM_LISTEN
+      # default; production boot refuses a non-loopback value). Never forward
+      # FPM_LISTEN_ALLOW_NON_LOOPBACK. FPM_MAX_CHILDREN keeps the image default, 6.
+      # The API sits behind this repository's nginx, so the API must trust one
       # proxy hop to see the real client IP. Without it every client collapses
       # into 127.0.0.1 and every one of SecureVault's rate limiters buckets all
       # users together -- five contact submissions from one attacker then lock
@@ -129,6 +132,33 @@ services:
       - PHOTO_S3_REGION
       - PHOTO_S3_ACCESS_KEY_ID
       - PHOTO_S3_SECRET_ACCESS_KEY
+    # Laravel on PHP-FPM: measured peak 302 MiB (SecureVault T7 load test, 6 workers,
+    # two concurrent argon2id at 64 MiB each). The theoretical ceiling, 6 x the 192M
+    # PHP memory_limit, does not fit this 1.9 GiB host next to Postgres: past 512m the
+    # kernel kills an FPM worker inside this container (FPM respawns it) instead of
+    # squeezing Postgres.
+    mem_limit: 512m
+  # Same image and environment as the API; runs the schedule (expiration cleanup, cache
+  # prune) instead of FPM. SecureVault's deploy pulls, starts, rolls back and logs both
+  # services by these names. Its healthcheck replaces the image's FPM ping (no FPM here).
+  securevault-scheduler:
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api-laravel:${SECUREVAULT_API_TAG:-latest}
+    container_name: homelab-securevault-scheduler
+    network_mode: host
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    entrypoint: ["/usr/local/share/securevault/docker/scheduler-entrypoint.sh"]
+    environment: *securevault-api-env
+    healthcheck:
+      test: ["CMD", "php", "artisan", "securevault:scheduler-health"]
+      interval: 60s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     mem_limit: 256m
   dayandyou-staging:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_STAGING_TAG:-staging}
