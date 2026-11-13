@@ -47,6 +47,9 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/securevault:/etc/nginx/securevault:ro
       - securevault-fpm:/run/securevault-fpm:ro
+      - family-api-sock:/run/family-api:ro
+      - memorial-api-sock:/run/memorial-api:ro
+      - zenvora-admin-sock:/run/zenvora-admin:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/lib/homelab-acme:/var/www/certbot:ro
     mem_limit: 64m
@@ -61,8 +64,16 @@ services:
     # Non-root image (USER node/bun); see README "Container hardening".
     cap_drop:
       - ALL
+    # HTTP on a unix socket, not 127.0.0.1:4000: loopback is shared by every
+    # host-network service, and a co-tenant reaching the API directly would skip
+    # nginx's limit_req and forge the client-IP headers behind the login lockout.
+    # Only this service and nginx (read-only) may mount family-api-sock
+    # (tests/verify-family-api-socket.sh).
+    environment:
+      - LISTEN_SOCKET=/run/family-api/http.sock
     volumes:
       - /opt/secrets/family-media/.env:/app/.env:ro
+      - family-api-sock:/run/family-api
     mem_limit: 640m
   securevault-api:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api-laravel:${SECUREVAULT_API_TAG:-latest}
@@ -268,6 +279,14 @@ services:
       - /tmp:size=16m,mode=1777
     env_file:
       - /opt/secrets/aiqiuqi-memorial/api.env
+    # HTTP on a unix socket, not 127.0.0.1:3001, which every host-network
+    # service can reach around nginx. Only this service and nginx (read-only)
+    # may mount memorial-api-sock (tests/verify-app-sockets.sh). A literal
+    # value, so it wins over env_file and needs no shell variable.
+    environment:
+      - LISTEN_SOCKET=/run/memorial-api/http.sock
+    volumes:
+      - memorial-api-sock:/run/memorial-api
     mem_limit: 192m
   memorial-worker:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-worker:${MEMORIAL_WORKER_TAG:-latest}
@@ -381,12 +400,11 @@ services:
     # service that talks to docker-socket-proxy, and that proxy must not be
     # reachable from the other host-network containers (see the comment on
     # docker-socket-proxy above). Joins the private docker-proxy-net bridge to
-    # reach it, plus a loopback-only port publish below so nginx (still
-    # host-network) can still reach this container exactly as before.
+    # reach it. nginx (still host-network) reaches it over a unix socket in
+    # zenvora-admin-sock, not a published port: a port bound to 127.0.0.1 is
+    # reachable from every host-network service (tests/verify-app-sockets.sh).
     networks:
       - docker-proxy-net
-    ports:
-      - "127.0.0.1:3100:3100"
     # This move off host networking also cut the *other* direction this
     # service needs: its own origin/certificate probe of nginx, which still
     # binds 127.0.0.1 (see NGINX_ORIGIN_HOST below) -- a loopback address
@@ -429,13 +447,22 @@ services:
     # all happen.
     env_file:
       - /opt/secrets/zenvora-admin/.env
+    # A literal value: it wins over env_file and resolves from no shell
+    # variable, so the passthrough pitfall above does not apply.
+    environment:
+      - LISTEN_SOCKET=/run/zenvora-admin/http.sock
     volumes:
       - /opt/data/zenvora-admin:/app/data
+      - zenvora-admin-sock:/run/zenvora-admin
     mem_limit: 128m
 
 volumes:
   # SecureVault's PHP-FPM socket; see securevault-api.
   securevault-fpm: {}
+  # The apps' HTTP sockets; see api, memorial-api and zenvora-admin.
+  family-api-sock: {}
+  memorial-api-sock: {}
+  zenvora-admin-sock: {}
 
 networks:
   docker-proxy-net:

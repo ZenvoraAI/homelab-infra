@@ -12,16 +12,16 @@ release workflows remain in their own repositories.
 | Compose service | Container | Host port | Public hostnames | `mem_limit` |
 | --- | --- | ---: | --- | ---: |
 | `nginx` | `homelab-nginx` | 80 / 443 | all hosts below | 64m |
-| `api` | `homelab-family-api` | 4000 | `family-api.valtou.com` | 640m |
+| `api` | `homelab-family-api` | none (HTTP on a unix socket, `family-api-sock` volume) | `family-api.valtou.com` | 640m |
 | `securevault-api` | `homelab-securevault-api` | none (FastCGI on a unix socket, `securevault-fpm` volume) | `api.valtou.com` | 512m |
 | `securevault-scheduler` | `homelab-securevault-scheduler` | — | none (no listener) | 256m |
 | `dayandyou-prod` | `homelab-dayandyou-prod` | 3003 | `dayandyou.com`, `www.dayandyou.com` | 400m |
 | `dayandyou-staging` | `homelab-dayandyou-staging` | 3002 | `staging.dayandyou.com` | 350m |
-| `memorial-api` | `homelab-memorial-api` | 3001 | `api.aiqiuqi.com` | 192m |
+| `memorial-api` | `homelab-memorial-api` | none (HTTP on a unix socket, `memorial-api-sock` volume) | `api.aiqiuqi.com` | 192m |
 | `memorial-worker` | `homelab-memorial-worker` | — | none (no listener) | 512m |
 | `docker-socket-proxy` | `homelab-docker-socket-proxy` | none (internal network only) | none | 16m |
 | `docker-api-filter` | `homelab-docker-api-filter` | none (private network only) | none | 16m |
-| `zenvora-admin` | `homelab-zenvora-admin` | 3100 (loopback) | `admin.valtou.com` | 128m |
+| `zenvora-admin` | `homelab-zenvora-admin` | none (HTTP on a unix socket, `zenvora-admin-sock` volume) | `admin.valtou.com` | 128m |
 
 Every service uses `network_mode: host` except `docker-socket-proxy`,
 `docker-api-filter` and `zenvora-admin`, which sit on two private bridge
@@ -39,9 +39,10 @@ networks instead:
 
 Neither is published to the host: every other service here being on
 `network_mode: host` means a port merely bound to `127.0.0.1` is reachable
-from all of them, not just its intended caller. `zenvora-admin` still
-publishes `127.0.0.1:3100` so nginx (host-network) can reach it exactly as
-before. `zenvora-admin`'s `DOCKER_PROXY_URL` stays
+from all of them, not just its intended caller. `zenvora-admin` publishes
+nothing either: nginx (host-network) reaches it over a unix socket in the
+`zenvora-admin-sock` volume, as it reaches the family, memorial and SecureVault
+APIs. `zenvora-admin`'s `DOCKER_PROXY_URL` stays
 `http://docker-socket-proxy:2375`: on `docker-proxy-net` that name is now an
 alias of `docker-api-filter`, not a
 loopback address. The application ports must remain firewalled from the
@@ -276,11 +277,22 @@ docker stats --no-stream
 Health checks on the host:
 
 ```bash
-curl -fsS http://127.0.0.1:4000/health  # family API
+docker compose exec -T api node dist/probe.js  # family API (unix socket; /health/ready)
 docker compose exec -T securevault-api /usr/local/share/securevault/docker/fcgi-probe.sh /readyz  # SecureVault API (FastCGI only)
-curl -fsS http://127.0.0.1:3001/health  # memorial API
+docker compose exec -T memorial-api node dist/probe.js /health/ready  # memorial API (unix socket)
+docker compose exec -T zenvora-admin bun src/probe.ts  # zenvora-admin (unix socket; /healthz)
 curl -fsS http://127.0.0.1:3003/         # Day and You production
 curl -fsS http://127.0.0.1:3002/         # Day and You staging
+```
+
+After deploying the socket change, confirm no app still answers on TCP, from a
+host-network container (each line must print `refused`):
+
+```bash
+ADMIN_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' homelab-zenvora-admin | awk '{print $1}')"
+for target in 127.0.0.1:4000 127.0.0.1:3001 127.0.0.1:3100 "$ADMIN_IP:3100"; do
+  docker run --rm --network host busybox:1.37 nc -z -w 2 "${target%:*}" "${target##*:}" && echo "OPEN $target" || echo "refused $target"
+done
 ```
 
 `memorial-worker` has no listener, so there is nothing to curl. Check it through
