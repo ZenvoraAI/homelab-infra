@@ -47,4 +47,9 @@ printf '%s\n' "$proxies" | grep -vqxE "proxy_pass[[:space:]]+http://unix:$SOCKET
 grep -rnE '127\.0\.0\.1:4000|localhost:4000|\[::1\]:4000' "$ROOT/nginx" \
   && fail "an nginx config still proxies to the family API's old TCP port"
 
+# CLIENT_IP_HEADER may name CF-Connecting-IP; a client-sent copy reaches nginx
+# from any loopback co-tenant, so nginx must overwrite it with $remote_addr.
+grep -qE '^[[:space:]]*proxy_set_header[[:space:]]+CF-Connecting-IP[[:space:]]+\$remote_addr;' "$NGINX" \
+  || fail "family-api.conf must overwrite CF-Connecting-IP with \$remote_addr"
+
 echo "PASS: the family API is reached only over its unix socket; only api and nginx mount it"
