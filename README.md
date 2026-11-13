@@ -285,6 +285,16 @@ curl -fsS http://127.0.0.1:3003/         # Day and You production
 curl -fsS http://127.0.0.1:3002/         # Day and You staging
 ```
 
+After deploying the socket change, confirm no app still answers on TCP, from a
+host-network container (each line must print `refused`):
+
+```bash
+ADMIN_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' homelab-zenvora-admin | awk '{print $1}')"
+for target in 127.0.0.1:4000 127.0.0.1:3001 127.0.0.1:3100 "$ADMIN_IP:3100"; do
+  docker run --rm --network host busybox:1.37 nc -z -w 2 "${target%:*}" "${target##*:}" && echo "OPEN $target" || echo "refused $target"
+done
+```
+
 `memorial-worker` has no listener, so there is nothing to curl. Check it through
 Compose instead:
 

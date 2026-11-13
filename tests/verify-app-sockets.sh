@@ -15,7 +15,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="${COMPOSE_FILE_UNDER_TEST:-$ROOT/docker-compose.yml}"
-NGINX_DIR="${NGINX_DIR_UNDER_TEST:-$ROOT/nginx/conf.d}"
+# Every directory compose mounts into nginx lives under nginx/; the old-port
+# search covers all of it, the vhosts are read from conf.d.
+NGINX_ROOT="${NGINX_ROOT_UNDER_TEST:-$ROOT/nginx}"
+NGINX_DIR="$NGINX_ROOT/conf.d"
 
 # service volume socket-dir vhost old-port
 APPS="api family-api-sock /run/family-api family-api.conf 4000
@@ -48,7 +51,7 @@ nginx - $volume:$dir:ro
   [ -n "$proxies" ] || fail "$vhost has no proxy_pass"
   printf '%s\n' "$proxies" | grep -vqxE "proxy_pass[[:space:]]+http://unix:$dir/http\\.sock:;" \
     && fail "$vhost proxies somewhere other than unix:$dir/http.sock:\n$proxies"
-  grep -rnE "(127\\.0\\.0\\.1|localhost|\\[::1\\]):$port([^0-9]|\$)" "$NGINX_DIR" \
+  grep -rnE "(127\\.0\\.0\\.1|localhost|\\[::1\\]):$port([^0-9]|\$)" "$NGINX_ROOT" \
     && fail "an nginx config still proxies to $service's old TCP port $port"
   printf '%s\n' "$code" | awk -v svc="$service" '
     /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { cur = $1; sub(/:$/, "", cur); next }
