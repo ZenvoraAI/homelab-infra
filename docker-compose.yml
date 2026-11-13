@@ -71,6 +71,11 @@ services:
     # (tests/verify-family-api-socket.sh).
     environment:
       - LISTEN_SOCKET=/run/family-api/http.sock
+      # glibc otherwise grows a malloc arena per thread, and sharp/libvips'
+      # worker threads leave them fragmented: RSS climbed to ~380 MB, 344 MB of
+      # it anonymous, within hours of a restart (2026-11-13). sharp's docs
+      # recommend capping the arenas on glibc.
+      - MALLOC_ARENA_MAX=2
     volumes:
       - /opt/secrets/family-media/.env:/app/.env:ro
       - family-api-sock:/run/family-api
