@@ -15,8 +15,8 @@ release workflows remain in their own repositories.
 | `api` | `homelab-family-api` | none (HTTP on a unix socket, `family-api-sock` volume) | `family-api.valtou.com` | 640m |
 | `securevault-api` | `homelab-securevault-api` | none (FastCGI on a unix socket, `securevault-fpm` volume) | `api.valtou.com` | 512m |
 | `securevault-scheduler` | `homelab-securevault-scheduler` | — | none (no listener) | 256m |
-| `dayandyou-prod` | `homelab-dayandyou-prod` | 3003 | `dayandyou.com`, `www.dayandyou.com` | 400m |
-| `dayandyou-staging` | `homelab-dayandyou-staging` | 3002 | `staging.dayandyou.com` | 350m |
+| `dayandyou-prod` | `homelab-dayandyou-prod` | none (HTTP on a unix socket, `dayandyou-prod-sock` volume) | `dayandyou.com`, `www.dayandyou.com` | 400m |
+| `dayandyou-staging` | `homelab-dayandyou-staging` | none (HTTP on a unix socket, `dayandyou-staging-sock` volume) | `staging.dayandyou.com` | 350m |
 | `memorial-api` | `homelab-memorial-api` | none (HTTP on a unix socket, `memorial-api-sock` volume) | `api.aiqiuqi.com` | 192m |
 | `memorial-worker` | `homelab-memorial-worker` | — | none (no listener) | 512m |
 | `docker-socket-proxy` | `homelab-docker-socket-proxy` | none (internal network only) | none | 16m |
@@ -281,16 +281,22 @@ docker compose exec -T api node dist/probe.js  # family API (unix socket; /healt
 docker compose exec -T securevault-api /usr/local/share/securevault/docker/fcgi-probe.sh /readyz  # SecureVault API (FastCGI only)
 docker compose exec -T memorial-api node dist/probe.js /health/ready  # memorial API (unix socket)
 docker compose exec -T zenvora-admin bun src/probe.ts  # zenvora-admin (unix socket; /healthz)
-curl -fsS http://127.0.0.1:3003/         # Day and You production
-curl -fsS http://127.0.0.1:3002/         # Day and You staging
+docker compose exec -T dayandyou-prod node server/probe.mjs     # Day and You production (unix socket; /api/health)
+docker compose exec -T dayandyou-staging node server/probe.mjs  # Day and You staging (unix socket; /api/health)
 ```
+
+Day and You switches to its sockets only once both services run an image with
+`server/start.mjs` (day-and-you `feat/listen-socket`): deploy that image to
+staging and production first, then this compose and nginx change. An older
+image ignores `LISTEN_SOCKET`, keeps listening on `PORT`, and nginx answers 502
+— which also applies to a later rollback past that image.
 
 After deploying the socket change, confirm no app still answers on TCP, from a
 host-network container (each line must print `refused`):
 
 ```bash
 ADMIN_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' homelab-zenvora-admin | awk '{print $1}')"
-for target in 127.0.0.1:4000 127.0.0.1:3001 127.0.0.1:3100 "$ADMIN_IP:3100"; do
+for target in 127.0.0.1:4000 127.0.0.1:3001 127.0.0.1:3100 "$ADMIN_IP:3100" 127.0.0.1:3002 127.0.0.1:3003; do
   docker run --rm --network host busybox:1.37 nc -z -w 2 "${target%:*}" "${target##*:}" && echo "OPEN $target" || echo "refused $target"
 done
 ```
