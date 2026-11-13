@@ -12,7 +12,7 @@ release workflows remain in their own repositories.
 | Compose service | Container | Host port | Public hostnames | `mem_limit` |
 | --- | --- | ---: | --- | ---: |
 | `nginx` | `homelab-nginx` | 80 / 443 | all hosts below | 64m |
-| `api` | `homelab-family-api` | 4000 | `family-api.valtou.com` | 640m |
+| `api` | `homelab-family-api` | none (HTTP on a unix socket, `family-api-sock` volume) | `family-api.valtou.com` | 640m |
 | `securevault-api` | `homelab-securevault-api` | none (FastCGI on a unix socket, `securevault-fpm` volume) | `api.valtou.com` | 512m |
 | `securevault-scheduler` | `homelab-securevault-scheduler` | — | none (no listener) | 256m |
 | `dayandyou-prod` | `homelab-dayandyou-prod` | 3003 | `dayandyou.com`, `www.dayandyou.com` | 400m |
@@ -276,7 +276,7 @@ docker stats --no-stream
 Health checks on the host:
 
 ```bash
-curl -fsS http://127.0.0.1:4000/health  # family API
+docker compose exec -T api node dist/probe.js  # family API (unix socket; /health/ready)
 docker compose exec -T securevault-api /usr/local/share/securevault/docker/fcgi-probe.sh /readyz  # SecureVault API (FastCGI only)
 curl -fsS http://127.0.0.1:3001/health  # memorial API
 curl -fsS http://127.0.0.1:3003/         # Day and You production

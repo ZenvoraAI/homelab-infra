@@ -47,6 +47,7 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/securevault:/etc/nginx/securevault:ro
       - securevault-fpm:/run/securevault-fpm:ro
+      - family-api-sock:/run/family-api:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/lib/homelab-acme:/var/www/certbot:ro
     mem_limit: 64m
@@ -61,8 +62,16 @@ services:
     # Non-root image (USER node/bun); see README "Container hardening".
     cap_drop:
       - ALL
+    # HTTP on a unix socket, not 127.0.0.1:4000: loopback is shared by every
+    # host-network service, and a co-tenant reaching the API directly would skip
+    # nginx's limit_req and forge the client-IP headers behind the login lockout.
+    # Only this service and nginx (read-only) may mount family-api-sock
+    # (tests/verify-family-api-socket.sh).
+    environment:
+      - LISTEN_SOCKET=/run/family-api/http.sock
     volumes:
       - /opt/secrets/family-media/.env:/app/.env:ro
+      - family-api-sock:/run/family-api
     mem_limit: 640m
   securevault-api:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api-laravel:${SECUREVAULT_API_TAG:-latest}
@@ -436,6 +445,8 @@ services:
 volumes:
   # SecureVault's PHP-FPM socket; see securevault-api.
   securevault-fpm: {}
+  # family-media API's HTTP socket; see api.
+  family-api-sock: {}
 
 networks:
   docker-proxy-net:
