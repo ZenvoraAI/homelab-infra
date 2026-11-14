@@ -358,8 +358,14 @@ file on disk breaks nothing. Validate, then recreate.
 - The memorial services read `/opt/secrets/aiqiuqi-memorial/api.env` and
   `/opt/secrets/aiqiuqi-memorial/worker.env` through `env_file`. Do not
   hand-edit either one — see `scripts/` below.
-- SecureVault and Day and You receive runtime variables from their deployment
-  workflows; do not add their values to this repository.
+- SecureVault and the Day and You storefront receive runtime variables from
+  their deployment workflows; do not add their values to this repository.
+- The Day and You API (`dayandyou-api-staging` and its scheduler) reads
+  everything from `/opt/secrets/dayandyou-api/staging.env` through `env_file`
+  (`required: false`, so a missing file breaks only those two services, never
+  `docker compose config` for the others). `ubuntu` `0600` in an `ubuntu`
+  `0700` directory; written only by `scripts/refresh-dayandyou-api-secrets.sh`
+  from SSM `/dayandyou-api/<env>/*`. Do not hand-edit it.
 - The Day and You CloudFront origin secret lives in
   `/opt/secrets/dayandyou/origin-secret-staging.map` (see "Day and You API
   origin"), mounted read-only into nginx only.
@@ -375,12 +381,13 @@ file on disk breaks nothing. Validate, then recreate.
 | --- | --- |
 | `docker-prune.sh` | Keeps, per service, the image `.env` pins plus the newest `IMAGE_KEEP_GOOD` (default 3) known-good releases from `.image-pins/`. Removes every other image of the repositories it manages, plus dangling layers. That is the rollback window. It removes nothing while any service is unpinned or any current pin does not resolve to a local image, runs under the pins lock, never touches other repositories, exits non-zero if a repository cannot be listed, and `DRY_RUN=1` previews. Meant to replace each product's age-based `docker image prune -af --filter until=48h`, which deletes other products' previous releases; no product calls it yet (Rollout step 4). |
 | `image-pins.sh` | `seed`, `check`, `get`, `promote`, `rollback <svc> <bad sha>`: the only writer of the pinned image values (see Images and tags). A lock left by a killed run is cleared automatically. |
+| `refresh-dayandyou-api-secrets.sh <staging\|prod>` | Writes the Day and You Laravel API's whole env file, `/opt/secrets/dayandyou-api/<env>.env`, from SSM `/dayandyou-api/<env>/*` (profile `dayandyou-api-ssm`). Refuses a missing required key, an unknown extra one, a prod `SITE_PASSWORD`, a partial `FRONTEND_REBUILD_*` set, or a value of the wrong shape (test vs live Stripe key, `APP_KEY`, URLs, minimum lengths, line breaks or single quotes). Values are written `KEY='value'`, which Compose's `env_file` takes literally. Run by the API deploy on every staging deploy (`sudo -n`), creates the file on first run. |
 | `refresh-memorial-aws-credentials.sh` | Pulls the memorial API and worker AWS credentials from SSM Parameter Store into their env files. |
 | `refresh-memorial-secrets.sh` | Pulls the CloudFront media signing key pair from SSM into the memorial API env file. |
 | `refresh-zenvora-admin-secrets.sh` | Pulls zenvora-admin's 14 secrets from SSM into its env file: GitHub App credentials, SES SMTP credentials, token-encryption key, whitelisted user ID, plus three tokens for external read-only APIs (a fine-grained GitHub alert-check PAT covering all ZenvoraAI-owned tracked repos, a classic PAT for GHCR package listing since neither GitHub Apps nor fine-grained PATs expose an org-level Packages permission, and a Cloudflare API token scoped to the three onboarded zones for the traffic/security-events panel). Same pattern as the memorial scripts, for the same reason. |
 | `reload-nginx-after-cert-renewal.sh` | Certbot deploy hook; reloads the `nginx` container after a renewal. |
 
-The two refresh scripts exist because hand-copying a secret through a
+The refresh scripts exist because hand-copying a secret through a
 terminal is a failure mode that can sit silently broken for a long time
 before anything notices — see the private `aws-infrastructure` repo,
 `docs/homelab-infra-incidents.md`, for what that cost once. The scripts
@@ -408,6 +415,7 @@ bash tests/verify-email-rate-limits.sh       # nginx limits + TRUST_PROXY reache
 bash tests/verify-certbot-webroot.sh         # the webroot renewal path is intact
 bash tests/verify-memorial-credential-refresh.sh  # the refresh script refuses a bad value
 bash tests/verify-zenvora-admin-secret-refresh.sh  # rotation accepts short non-secrets, still refuses short secrets
+bash tests/verify-dayandyou-api-secret-refresh.sh  # exact KEY='value' file, every shape rule refuses, no value echoed
 bash tests/verify-secret-backup-rotation.sh  # a rotation leaves exactly one .bak copy
 bash tests/verify-nginx-server-tokens.sh    # nginx does not advertise its version
 bash tests/verify-docker-api-allowlist.sh   # zenvora-admin reaches only GET /containers/json
@@ -421,6 +429,7 @@ bash tests/verify-container-hardening.sh     # no-new-privileges / cap_drop / re
 bash tests/verify-securevault-api-env.sh     # securevault-api receives the extension sign-in vars
 bash tests/verify-securevault-fpm-socket.sh  # FastCGI only over unix sockets; only the API and nginx mount them
 bash tests/verify-dayandyou-api-origin.sh    # api-origin-staging: secret/viewer gate, viewer-keyed throttles, include
+bash tests/verify-dayandyou-api-env.sh       # API services read only staging.env (required: false), no forwarded names
 ```
 
 `verify-container-log-limits.sh` asserts per service rather than grepping for
@@ -554,6 +563,37 @@ curl -s -o /dev/null -w '%{http_code}\n' https://api-origin-staging.dayandyou.co
 
 Until the API's first deploy, a request with the secret and a viewer address
 gets `503 {"error":"Service unavailable"}` (no FPM socket yet).
+
+**The API's env file (one-time setup, before its first deploy).** The API's
+settings and secrets live in SSM as SecureStrings under
+`/dayandyou-api/staging/<KEY>`; the deploy runs
+`sudo -n /opt/homelab-infra/scripts/refresh-dayandyou-api-secrets.sh staging`
+before it starts any container, and on any refusal it stops with the old file
+untouched. The key list and rules are in the script header.
+
+1. In aws-infrastructure: IAM user `dayandyou-api-ssm`, read-only on
+   `/dayandyou-api/*` (`ssm:GetParameter`, `ssm:GetParametersByPath`, plus
+   `kms:Decrypt` if the parameters use a customer-managed key).
+2. On the host, its access key as root's profile (the script runs under sudo
+   and defaults `AWS_PROFILE` to it):
+
+   ```bash
+   sudo aws configure --profile dayandyou-api-ssm   # region ap-southeast-2, output text
+   ```
+
+3. Put every parameter in SSM, then write the file once by hand to see it pass:
+
+   ```bash
+   cd /opt/homelab-infra && git pull --ff-only
+   sudo scripts/refresh-dayandyou-api-secrets.sh staging   # as ubuntu: the new file is ubuntu 0600
+   sudo ls -l /opt/secrets/dayandyou-api/                   # staging.env, never cat it
+   docker compose config -q && echo compose ok
+   ```
+
+To change a value: update SSM, then redeploy the API (or rerun step 3 and
+`docker compose up -d --no-deps --force-recreate dayandyou-api-staging
+dayandyou-api-scheduler-staging`). The one previous file is kept as
+`staging.env.bak-<timestamp>`.
 
 ## Container hardening
 

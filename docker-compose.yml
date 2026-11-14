@@ -306,38 +306,23 @@ services:
     # Non-root image (USER www-data, as securevault-api); see README "Container hardening".
     cap_drop:
       - ALL
-    # Names only: the values come from the API's deploy shell. The scheduler
-    # shares this list; the two FPM_* literals are inert there (no FPM).
+    # Every app setting and secret comes from this file, which
+    # scripts/refresh-dayandyou-api-secrets.sh writes from SSM
+    # (/dayandyou-api/staging/*) at the start of each API deploy; none is
+    # forwarded from a shell, and none may be added to environment: below (a
+    # bare name there would override the file with the shell's value, blank
+    # if unset). SITE_PASSWORD is required on staging: unset, the API serves
+    # ungated. required: false is load-bearing: every product's deploy runs
+    # compose on this file, and a missing hard-required env_file fails
+    # `docker compose config` (and so those deploys) for every service. The
+    # API's boot guard refuses to start without its config, so a missing file
+    # fails loudly on these two services only. The scheduler shares both lists.
+    env_file: &dayandyou-api-staging-env-file
+      - path: /opt/secrets/dayandyou-api/staging.env
+        required: false
+    # Literals only. Main pool 2; payments pool 1 idle worker plus one forked
+    # on demand. Inert in the scheduler (no FPM).
     environment: &dayandyou-api-staging-env
-      - DATABASE_URL
-      # Same value as the storefront's NEXTAUTH_SECRET (stored TOTP secrets,
-      # checkout-token key); not rotatable without a re-encryption migration.
-      - DAYANDYOU_ROOT_SECRET
-      - APP_KEY
-      - APP_URL
-      - STRIPE_SECRET_KEY
-      - STRIPE_WEBHOOK_SECRET
-      - SITE_MODE
-      # REQUIRED on staging: unset, the API serves ungated. The staging deploy
-      # stops this service if its probe gets through without credentials.
-      - SITE_PASSWORD
-      - AWS_ACCESS_KEY_ID
-      - AWS_SECRET_ACCESS_KEY
-      - AWS_REGION
-      - AWS_S3_BUCKET
-      - ASSET_BASE_URL
-      - AWS_SES_REGION
-      - AWS_SES_ACCESS_KEY_ID
-      - AWS_SES_SECRET_ACCESS_KEY
-      - AWS_SES_FROM
-      - ADMIN_EMAIL
-      # Static storefront rebuild after product edits. Optional: any of the
-      # four unset turns it off; the scheduler sends the debounced dispatch.
-      - FRONTEND_REBUILD_TOKEN
-      - FRONTEND_REBUILD_REPO
-      - FRONTEND_REBUILD_WORKFLOW
-      - FRONTEND_REBUILD_REF
-      # Main pool 2; payments pool 1 idle worker plus one forked on demand.
       - FPM_MAX_CHILDREN=2
       - FPM_PAYMENTS_PM=dynamic
     # FastCGI has no authentication and loopback is shared by every
@@ -362,6 +347,7 @@ services:
     cap_drop:
       - ALL
     entrypoint: ["dayandyou-scheduler-entrypoint"]
+    env_file: *dayandyou-api-staging-env-file
     environment: *dayandyou-api-staging-env
     healthcheck:
       disable: true
