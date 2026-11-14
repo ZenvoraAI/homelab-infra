@@ -75,7 +75,16 @@ while IFS= read -r loc; do
   [ "$sets" = "$incs" ] || fail "a location sets the FPM socket without the CloudFront include (or the reverse):\n$loc"
   fcgi=$((fcgi + incs))
 done <<<"$locations"
-[ "$fcgi" -ge 6 ] || fail "expected the API's 6 FastCGI locations in the 443 block, found $fcgi"
+[ "$fcgi" -ge 7 ] || fail "expected the API's 7 FastCGI locations in the 443 block, found $fcgi"
+
+# A prefix location ending in "/" that runs FastCGI makes nginx answer the bare path (no
+# slash) with a 301 to the slash form. The storefront POSTs /api/checkout, so that 301
+# broke checkout ("Failed to fetch", 2026-11-15): the bare path needs its own exact
+# location with the same no-error-log FastCGI handling.
+checkout_exact="$(grep -E '^    location = /api/checkout \{' <<<"$locations" || true)"
+[ -n "$checkout_exact" ] || fail "POST /api/checkout needs 'location = /api/checkout' (else nginx 301s it to /api/checkout/)"
+[[ "$checkout_exact" == *'error_log /dev/null;'* ]] || fail "location = /api/checkout must log no errors (order tokens in query strings):\n$checkout_exact"
+[[ "$checkout_exact" == *"include $INCLUDE_PATH;"* ]] || fail "location = /api/checkout must run the API through the CloudFront include"
 
 # Throttles: only the viewer-keyed zones, and those keyed on the viewer.
 limits="$(printf '%s\n' "$tls_block" | grep -E '^[[:space:]]*limit_(req|conn)[[:space:]]' || true)"
