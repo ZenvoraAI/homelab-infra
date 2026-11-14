@@ -24,7 +24,7 @@
 # known-good values in order; rollback and pruning both read it.
 
 # shellcheck disable=SC2034  # read by tests/verify-image-pinning.sh
-PINS_COMPOSE_MODE=transition
+PINS_COMPOSE_MODE=strict
 
 # service|container|VAR|kind|repo|fallback
 #   kind=tag   : image is ghcr.io/$GHCR_OWNER/<repo>:${VAR}; the value is a

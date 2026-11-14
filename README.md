@@ -134,21 +134,21 @@ Every service image is named through a pin variable, in one of two modes
 (`PINS_COMPOSE_MODE` in `scripts/lib/image-pins-lib.sh`;
 `tests/verify-image-pinning.sh` holds the compose file to it):
 
-- **transition** (now): `${VAR:-<fallback>}`. An unset variable falls back to
+- **transition** (before rollout): `${VAR:-<fallback>}`. An unset variable falls back to
   exactly what that service ran before pinning: `:latest`/`:release`/`:staging`
   for the app images (moving, as before) and a digest-pinned
   `nginx:1.30.6-alpine` / `tecnativa/docker-socket-proxy:v0.5.0` for the
   third-party ones (nginx moved off the end-of-life 1.27 branch; see "nginx
   version" below). `image-pins.sh check` lists what is still falling back.
-- **strict** (after rollout): `${VAR:?…}`. With any variable unset, every
+- **strict** (now): `${VAR:?…}`. With any variable unset, every
   `docker compose` command fails rather than pulling a moving tag.
 
-Why not strict straight away: Compose interpolates the *whole* file for every
-command, so one unset required variable fails every product's deploy (even
-`docker compose pull <other-service>`), and zenvora-admin's deploy pulls
-homelab `main` and runs compose unattended on every zenvora push. Strict mode
-is a one-line flip plus the compose lines, kept on its own branch
-(`fix/image-pinning-strict-2026-10-31`) to merge only after the rollout below.
+Strict mode is on: every variable must be pinned in `.env` (check with
+`scripts/image-pins.sh check`) before any `docker compose` command runs here.
+It was introduced in transition mode first because Compose interpolates the
+*whole* file for every command, so one unset required variable fails every
+product's deploy, and zenvora-admin's deploy pulls homelab `main` unattended.
+To add a service, pin its variable on the host before merging.
 
 | Variable | Service(s) | Value |
 | --- | --- | --- |
@@ -191,7 +191,7 @@ So `.env` always names the last known-good release:
 pins each unset variable to the digest its container runs now (one-off, at
 rollout; it never overwrites).
 
-### Rollout (in this order)
+### Rollout (done before strict mode was merged; kept for a rebuilt host)
 
 Not every product workflow calls `promote`/`docker-prune.sh` yet. Until each
 product's patch lands, its deploys keep working because of the transition
@@ -209,7 +209,8 @@ with those services on 2026-11-15.)
    `scripts/image-pins.sh check` until it exits 0.
 3. Land the product patches (promote after health, `docker-prune.sh` instead
    of the 48h prune), one product at a time.
-4. Only then merge the strict branch.
+4. Strict mode was merged on 2026-11-15, once `check` passed on the host. On a
+   rebuilt host, seed and `check` before the first deploy, or nothing will start.
 
 ### nginx version
 

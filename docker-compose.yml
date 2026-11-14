@@ -35,7 +35,7 @@ x-logging: &default-logging
 # edit; the default is the answer in every case today.
 services:
   nginx:
-    image: ${NGINX_IMAGE:-nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949}
+    image: ${NGINX_IMAGE:?NGINX_IMAGE unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-nginx
     network_mode: host
     restart: unless-stopped
@@ -61,7 +61,7 @@ services:
       - /var/lib/homelab-acme:/var/www/certbot:ro
     mem_limit: 64m
   api:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/family-media-api:${FAMILY_API_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/family-media-api:${FAMILY_API_TAG:?FAMILY_API_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-family-api
     network_mode: host
     restart: unless-stopped
@@ -88,7 +88,7 @@ services:
       - family-api-sock:/run/family-api
     mem_limit: 640m
   securevault-api:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api-laravel:${SECUREVAULT_API_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api-laravel:${SECUREVAULT_API_TAG:?SECUREVAULT_API_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-securevault-api
     network_mode: host
     restart: unless-stopped
@@ -143,7 +143,7 @@ services:
   # prune) instead of FPM. SecureVault's deploy pulls, starts, rolls back and logs both
   # services by these names. Its healthcheck replaces the image's FPM ping (no FPM here).
   securevault-scheduler:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api-laravel:${SECUREVAULT_API_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api-laravel:${SECUREVAULT_API_TAG:?SECUREVAULT_API_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-securevault-scheduler
     network_mode: host
     restart: unless-stopped
@@ -168,7 +168,7 @@ services:
   # and rolls back both services by these names and DAYANDYOU_API_STAGING_TAG;
   # rollback re-tags the previous image :staging, so that default must stay.
   dayandyou-api-staging:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou-api:${DAYANDYOU_API_STAGING_TAG:-staging}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou-api:${DAYANDYOU_API_STAGING_TAG:?DAYANDYOU_API_STAGING_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-dayandyou-api-staging
     network_mode: host
     restart: unless-stopped
@@ -209,7 +209,7 @@ services:
   # frontend-rebuild dispatch) instead of FPM, so it mounts no socket volume.
   # The image's HEALTHCHECK pings FPM, which does not run here.
   dayandyou-api-scheduler-staging:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou-api:${DAYANDYOU_API_STAGING_TAG:-staging}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou-api:${DAYANDYOU_API_STAGING_TAG:?DAYANDYOU_API_STAGING_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-dayandyou-api-scheduler-staging
     network_mode: host
     restart: unless-stopped
@@ -226,7 +226,7 @@ services:
     # Measured peak 93 MiB locally (schedule:run boots every minute).
     mem_limit: 128m
   memorial-api:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-api:${MEMORIAL_API_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-api:${MEMORIAL_API_TAG:?MEMORIAL_API_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-memorial-api
     network_mode: host
     restart: unless-stopped
@@ -252,7 +252,7 @@ services:
       - memorial-api-sock:/run/memorial-api
     mem_limit: 192m
   memorial-worker:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-worker:${MEMORIAL_WORKER_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-worker:${MEMORIAL_WORKER_TAG:?MEMORIAL_WORKER_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-memorial-worker
     network_mode: host
     restart: unless-stopped
@@ -290,7 +290,7 @@ services:
   # the probe in README "docker API allow-list"; the candidate mitigations are
   # listed there, none applied yet.
   docker-socket-proxy:
-    image: ${DOCKER_SOCKET_PROXY_IMAGE:-tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459}
+    image: ${DOCKER_SOCKET_PROXY_IMAGE:?DOCKER_SOCKET_PROXY_IMAGE unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-docker-socket-proxy
     restart: unless-stopped
     logging: *default-logging
@@ -329,7 +329,7 @@ services:
   # container is still attached to docker-proxy-net, that name resolves to
   # both.
   docker-api-filter:
-    image: ${NGINX_IMAGE:-nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949}
+    image: ${NGINX_IMAGE:?NGINX_IMAGE unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-docker-api-filter
     restart: unless-stopped
     logging: *default-logging
@@ -357,7 +357,7 @@ services:
       start_period: 10s
     mem_limit: 16m
   zenvora-admin:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/zenvora-admin:${ZENVORA_ADMIN_TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/zenvora-admin:${ZENVORA_ADMIN_TAG:?ZENVORA_ADMIN_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-zenvora-admin
     # Not network_mode: host, unlike every other app here -- this is the one
     # service that talks to docker-socket-proxy, and that proxy must not be
