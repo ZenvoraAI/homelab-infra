@@ -50,6 +50,8 @@ services:
       - family-api-sock:/run/family-api:ro
       - memorial-api-sock:/run/memorial-api:ro
       - zenvora-admin-sock:/run/zenvora-admin:ro
+      - dayandyou-staging-sock:/run/dayandyou-staging:ro
+      - dayandyou-prod-sock:/run/dayandyou-prod:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/lib/homelab-acme:/var/www/certbot:ro
     mem_limit: 64m
@@ -226,6 +228,13 @@ services:
       # by an in-process timer every 5 minutes (instrumentation-node.ts),
       # so this is an ops convenience, not a dependency.
       - CRON_SECRET
+      # HTTP only on a unix socket in dayandyou-staging-sock, never 127.0.0.1:
+      # a port there is reachable from every host-network service
+      # (tests/verify-app-sockets.sh). A literal value, so no deploy shell can
+      # unset it. PORT above stays for images older than the socket support.
+      - LISTEN_SOCKET=/run/dayandyou-staging/http.sock
+    volumes:
+      - dayandyou-staging-sock:/run/dayandyou-staging
     mem_limit: 350m
   dayandyou-prod:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_PROD_TAG:-release}
@@ -266,6 +275,13 @@ services:
       # by an in-process timer every 5 minutes (instrumentation-node.ts),
       # so this is an ops convenience, not a dependency.
       - CRON_SECRET
+      # HTTP only on a unix socket in dayandyou-prod-sock, never 127.0.0.1:
+      # a port there is reachable from every host-network service
+      # (tests/verify-app-sockets.sh). A literal value, so no deploy shell can
+      # unset it. PORT above stays for images older than the socket support.
+      - LISTEN_SOCKET=/run/dayandyou-prod/http.sock
+    volumes:
+      - dayandyou-prod-sock:/run/dayandyou-prod
     mem_limit: 400m
   memorial-api:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-api:${MEMORIAL_API_TAG:-latest}
@@ -464,10 +480,12 @@ services:
 volumes:
   # SecureVault's PHP-FPM socket; see securevault-api.
   securevault-fpm: {}
-  # The apps' HTTP sockets; see api, memorial-api and zenvora-admin.
+  # The apps' HTTP sockets; see api, memorial-api, zenvora-admin and dayandyou-*.
   family-api-sock: {}
   memorial-api-sock: {}
   zenvora-admin-sock: {}
+  dayandyou-staging-sock: {}
+  dayandyou-prod-sock: {}
 
 networks:
   docker-proxy-net:
