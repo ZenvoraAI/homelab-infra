@@ -358,8 +358,13 @@ file on disk breaks nothing. Validate, then recreate.
 - The memorial services read `/opt/secrets/aiqiuqi-memorial/api.env` and
   `/opt/secrets/aiqiuqi-memorial/worker.env` through `env_file`. Do not
   hand-edit either one — see `scripts/` below.
-- SecureVault and the Day and You storefront receive runtime variables from
-  their deployment workflows; do not add their values to this repository.
+- The Day and You storefront receives runtime variables from its deployment
+  workflow; do not add its values to this repository.
+- SecureVault (`securevault-api` and its scheduler) reads everything from
+  `/opt/secrets/securevault/api.env` through `env_file` (`required: false`),
+  `ubuntu` `0600` in an `ubuntu` `0700` directory; written only by
+  `scripts/refresh-securevault-secrets.sh` from SSM `/securevault/prod/*`
+  (see "SecureVault env file"). Do not hand-edit it.
 - The Day and You API (`dayandyou-api-staging` and its scheduler) reads
   everything from `/opt/secrets/dayandyou-api/staging.env` through `env_file`
   (`required: false`, so a missing file breaks only those two services, never
@@ -383,6 +388,7 @@ file on disk breaks nothing. Validate, then recreate.
 | `image-pins.sh` | `seed`, `check`, `get`, `promote`, `rollback <svc> <bad sha>`: the only writer of the pinned image values (see Images and tags). A lock left by a killed run is cleared automatically. |
 | `refresh-dayandyou-api-secrets.sh <staging\|prod>` | Writes the Day and You Laravel API's whole env file, `/opt/secrets/dayandyou-api/<env>.env`, from SSM `/dayandyou-api/<env>/*` (profile `dayandyou-api-ssm`). Refuses a missing required key, an unknown extra one, a prod `SITE_PASSWORD`, a partial `FRONTEND_REBUILD_*` set, or a value of the wrong shape (test vs live Stripe key, `APP_KEY`, URLs, minimum lengths, line breaks or single quotes). Values are written `KEY='value'`, which Compose's `env_file` takes literally. Run by the API deploy on every staging deploy (`sudo -n`), creates the file on first run. |
 | `refresh-memorial-aws-credentials.sh` | Pulls the memorial API and worker AWS credentials from SSM Parameter Store into their env files. |
+| `refresh-securevault-secrets.sh` | Writes SecureVault's whole env file, `/opt/secrets/securevault/api.env`, from SSM `/securevault/prod/*` (profile `securevault-ssm`), deriving `ALLOWED_EXTENSION_ORIGINS` from `EXTENSION_IDS`. Refuses a missing required key, an unknown extra one, a partial `GOOGLE_*` set, `PHOTO_S3_*` without `OBJECT_STORE`, or a value of the wrong shape (secret lengths, WebAuthn RP ID and origins, URLs, SMTP port, extension ids, line breaks or single quotes). Written `KEY='value'`. Run by SecureVault's deploy on every backend deploy (`sudo -n`); creates the file on first run. |
 | `refresh-memorial-secrets.sh` | Pulls the CloudFront media signing key pair from SSM into the memorial API env file. |
 | `refresh-zenvora-admin-secrets.sh` | Pulls zenvora-admin's 14 secrets from SSM into its env file: GitHub App credentials, SES SMTP credentials, token-encryption key, whitelisted user ID, plus three tokens for external read-only APIs (a fine-grained GitHub alert-check PAT covering all ZenvoraAI-owned tracked repos, a classic PAT for GHCR package listing since neither GitHub Apps nor fine-grained PATs expose an org-level Packages permission, and a Cloudflare API token scoped to the three onboarded zones for the traffic/security-events panel). Same pattern as the memorial scripts, for the same reason. |
 | `reload-nginx-after-cert-renewal.sh` | Certbot deploy hook; reloads the `nginx` container after a renewal. |
@@ -416,6 +422,7 @@ bash tests/verify-certbot-webroot.sh         # the webroot renewal path is intac
 bash tests/verify-memorial-credential-refresh.sh  # the refresh script refuses a bad value
 bash tests/verify-zenvora-admin-secret-refresh.sh  # rotation accepts short non-secrets, still refuses short secrets
 bash tests/verify-dayandyou-api-secret-refresh.sh  # exact KEY='value' file, every shape rule refuses, no value echoed
+bash tests/verify-securevault-secret-refresh.sh  # same for SecureVault, plus derived extension origins
 bash tests/verify-secret-backup-rotation.sh  # a rotation leaves exactly one .bak copy
 bash tests/verify-nginx-server-tokens.sh    # nginx does not advertise its version
 bash tests/verify-docker-api-allowlist.sh   # zenvora-admin reaches only GET /containers/json
@@ -426,7 +433,7 @@ bash tests/verify-image-pins-script.sh       # pin/rollback/prune behaviour, stu
 bash tests/verify-nginx-image-branch.sh      # nginx fallback is a digest-pinned, supported stable branch
 bash tests/verify-nginx-default-server.sh    # unknown Host/SNI: 444 / handshake rejected, never the admin vhost
 bash tests/verify-container-hardening.sh     # no-new-privileges / cap_drop / read_only where verified
-bash tests/verify-securevault-api-env.sh     # securevault-api receives the extension sign-in vars
+bash tests/verify-securevault-api-env.sh     # API + scheduler read only securevault/api.env, no forwarded names
 bash tests/verify-securevault-fpm-socket.sh  # FastCGI only over unix sockets; only the API and nginx mount them
 bash tests/verify-dayandyou-api-origin.sh    # api-origin-staging: secret/viewer gate, viewer-keyed throttles, include
 bash tests/verify-dayandyou-api-env.sh       # API services read only staging.env (required: false), no forwarded names
@@ -594,6 +601,60 @@ To change a value: update SSM, then redeploy the API (or rerun step 3 and
 `docker compose up -d --no-deps --force-recreate dayandyou-api-staging
 dayandyou-api-scheduler-staging`). The one previous file is kept as
 `staging.env.bak-<timestamp>`.
+
+## SecureVault env file
+
+SecureVault's settings and secrets live in SSM as SecureStrings under
+`/securevault/prod/<KEY>`; SecureVault's backend deploy runs
+`sudo -n /opt/homelab-infra/scripts/refresh-securevault-secrets.sh` right
+after its `git pull`, and on any refusal stops before the image pull, the
+preflight, the backup and the migration, with the old file untouched. The key
+list and rules are in the script header. No app secret passes through GitHub
+Actions.
+
+One-time setup, done **before the host pulls the homelab-infra change that
+switches these services to `env_file:`**: compose treats the file as optional,
+so any `compose up` of them (another product's deploy included) without it
+starts the API with no config, and it refuses to boot.
+
+The sudo rule lets the deploy user run a script in a checkout it owns, so it
+is root-equivalent for that user; so is its membership of the `docker` group,
+which it already needs to run compose. Same trust boundary as the other
+refresh scripts here.
+
+1. In aws-infrastructure: IAM user `securevault-ssm`, read-only on
+   `/securevault/prod/*` (`ssm:GetParameter`, `ssm:GetParametersByPath`,
+   plus `kms:Decrypt` for the SecureStrings' key). Nothing else.
+2. On the host, its access key as root's profile (the script runs under sudo
+   and defaults `AWS_PROFILE` to it; never the deploy key's profile):
+
+   ```bash
+   sudo aws configure --profile securevault-ssm   # region ap-southeast-2, output text
+   ```
+
+3. Let the deploy user run exactly this script, nothing else:
+
+   ```bash
+   echo 'ubuntu ALL=(root) NOPASSWD: /opt/homelab-infra/scripts/refresh-securevault-secrets.sh' \
+     | sudo tee /etc/sudoers.d/securevault-secrets >/dev/null
+   sudo chmod 440 /etc/sudoers.d/securevault-secrets && sudo visudo -c
+   ```
+
+4. Put every parameter in SSM, then write the file once by hand to see it pass:
+
+   ```bash
+   cd /opt/homelab-infra && git pull --ff-only
+   sudo -n scripts/refresh-securevault-secrets.sh   # as ubuntu: the new file is ubuntu 0600
+   sudo ls -l /opt/secrets/securevault/              # api.env, never cat it
+   docker compose config -q && echo compose ok
+   ```
+
+To change a value: update SSM, then redeploy the backend (or rerun step 4 and
+`docker compose up -d --no-deps --force-recreate securevault-api
+securevault-scheduler`). The one previous file is kept as
+`api.env.bak-<timestamp>`. Never change `WEBAUTHN_RP_ID` or `JWT_SECRET` by
+accident: the first kills every registered passkey, the second signs every
+user out.
 
 ## Container hardening
 

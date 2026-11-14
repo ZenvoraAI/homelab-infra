@@ -1,63 +1,82 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Compose forwards to securevault-api only the names in its `environment:`
-# list; an export in SecureVault's deploy.yml that is missing here never
-# reaches the container (TRUST_PROXY and WEBAUTHN_* were each lost this way).
-# Browser-extension sign-in needs two:
-#   EXTENSION_IDS             -- without it /api/auth/extension/* answer 503
-#   ALLOWED_EXTENSION_ORIGINS -- without it CORS refuses the extension's
-#                                chrome-extension://<id> token exchange
-# SecureVault's deploy exports both (the second derived from the first).
-# Place photos (client-encrypted, stored in S3) need five more:
-#   OBJECT_STORE                       -- s3 turns photos on; unset or off keeps them off
-#   PHOTO_S3_BUCKET, PHOTO_S3_REGION   -- where the photos live
-#   PHOTO_S3_ACCESS_KEY_ID/SECRET_...  -- the securevault-photos IAM user (p/* only)
-# No AWS_* name may be forwarded: the host's AWS CLI runs on the deploy key,
-# which the API must never hold.
-# EXTENSION_SIGNIN_REQUIRED is deliberately absent: deploy.yml passes it only
-# to the preflight with `docker compose run -e`.
+# SecureVault's settings and secrets reach securevault-api and
+# securevault-scheduler only through /opt/secrets/securevault/api.env, which
+# scripts/refresh-securevault-secrets.sh writes from SSM. Pinned here:
+#   - both services read exactly that file, with required: false: a
+#     hard-required env_file that is missing fails `docker compose config` for
+#     every service, and every product's deploy runs compose on this file
+#   - their environment: holds only the two literals NODE_ENV=production and
+#     TRUST_PROXY=1; a bare app key name there would override the file with
+#     the deploy shell's value (blank when unset), which is how TRUST_PROXY
+#     and WEBAUTHN_* were once lost
+#   - no AWS_* name anywhere in either list (the host's AWS CLI keys must
+#     never reach the API), no PORT (FPM has no HTTP port), and
+#     EXTENSION_SIGNIN_REQUIRED stays out (the deploy passes it to the
+#     preflight only, with `docker compose run -e`)
+#   - no other service reads or mounts /opt/secrets/securevault
+# The key list is taken from the refresh script, so a key added there is
+# covered here without a second edit.
 #
-# The scheduler (same image) must get exactly the same list: it runs the same
-# boot checks. It shares the API's list through the YAML anchor.
-# PORT is gone: PHP-FPM serves FastCGI on a unix socket, it has no HTTP port.
-#
-# Pure repo test: reads only docker-compose.yml, never any value.
+# Pure repo test: reads docker-compose.yml and the script, never any value.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="${COMPOSE_FILE_UNDER_TEST:-$ROOT/docker-compose.yml}"
-REQUIRED="EXTENSION_IDS ALLOWED_EXTENSION_ORIGINS OBJECT_STORE PHOTO_S3_BUCKET PHOTO_S3_REGION PHOTO_S3_ACCESS_KEY_ID PHOTO_S3_SECRET_ACCESS_KEY"
+SCRIPT="$ROOT/scripts/refresh-securevault-secrets.sh"
 
 fail() { printf 'FAIL: %b\n' "$*" >&2; exit 1; }
 
-# Bare names under services.securevault-api.environment (list form).
-env_names() {
-  awk '
-    /^  securevault-api:[[:space:]]*$/ { in_svc = 1; next }
-    in_svc && /^  [A-Za-z0-9_-]+:/ { in_svc = 0 }
-    in_svc && /^    environment:/ { in_env = 1; next }
-    in_env && /^    [A-Za-z_]/ { in_env = 0 }
-    in_env && /^      - / { sub(/^      - /, ""); sub(/[[:space:]]*(#.*)?$/, ""); print }
-  ' "$COMPOSE"
-}
+keys="$(sed -nE 's/^(REQUIRED_KEYS|OPTIONAL_KEYS|GOOGLE_KEYS|PHOTO_KEYS)="([^"]*)"$/\2/p' "$SCRIPT" | tr '\n' ' ') ALLOWED_EXTENSION_ORIGINS"
+[ "$(wc -w <<<"$keys" | tr -d ' ')" -ge 26 ] || fail "parsed only '$keys' from the refresh script -- parser broke?"
 
-names="$(env_names)"
-[ "$(printf '%s\n' "$names" | grep -c .)" -ge 20 ] || fail "parsed only $(printf '%s\n' "$names" | grep -c .) securevault-api env names -- parser broke?"
-for name in $REQUIRED; do
-  printf '%s\n' "$names" | grep -qx "$name" \
-    || fail "securevault-api environment: is missing '- $name' (bare pass-through from the deploy shell)"
-done
-printf '%s\n' "$names" | grep -q '=' && fail "securevault-api environment: must stay bare pass-through names, no values"
-printf '%s\n' "$names" | grep -q '^AWS_' && fail "securevault-api environment: must not forward any AWS_* name (deploy key stays on the host)"
-printf '%s\n' "$names" | grep -qx EXTENSION_SIGNIN_REQUIRED && fail "EXTENSION_SIGNIN_REQUIRED belongs to the preflight run only"
+# shellcheck disable=SC2016  # Ruby source
+COMPOSE="$COMPOSE" KEYS="$keys" ruby -ryaml -e '
+  src = File.read(ENV.fetch("COMPOSE"))
+  doc = YAML.respond_to?(:unsafe_load) ? YAML.unsafe_load(src) : YAML.load(src)
+  services = doc.fetch("services")
+  keys = ENV.fetch("KEYS").split
+  file = "/opt/secrets/securevault/api.env"
+  api = %w[securevault-api securevault-scheduler]
+  errors = []
+  api.each do |name|
+    svc = services[name] or (errors << "missing service #{name}"; next)
+    want = [{ "path" => file, "required" => false }]
+    errors << "#{name}: env_file must be exactly #{want.inspect}, got #{svc["env_file"].inspect}" unless svc["env_file"] == want
+    env = Array(svc["environment"]).map(&:to_s)
+    errors << "#{name}: environment must be exactly the literals, got #{env.inspect}" unless env == %w[NODE_ENV=production TRUST_PROXY=1]
+    env.each do |e|
+      n = e.split("=").first
+      errors << "#{name}: environment must not name #{n} (it would override the env file)" if keys.include?(n)
+      errors << "#{name}: environment must not name #{n}" if n.start_with?("AWS_") || %w[PORT EXTENSION_SIGNIN_REQUIRED FPM_LISTEN].include?(n)
+    end
+  end
+  services.each do |name, svc|
+    next if api.include?(name)
+    refs = Array(svc["env_file"]).map { |e| e.is_a?(Hash) ? e["path"].to_s : e.to_s } + Array(svc["volumes"]).map(&:to_s)
+    errors << "#{name}: must not read /opt/secrets/securevault" if refs.any? { |r| r.start_with?("/opt/secrets/securevault") }
+  end
+  if errors.empty?
+    puts "ok"
+  else
+    errors.each { |e| warn "FAIL: #{e}" }
+    exit 1
+  end
+' >/dev/null
 
-printf '%s\n' "$names" | grep -qx PORT && fail "securevault-api environment: PORT is an Express leftover (FPM has no HTTP port)"
+# No AWS_* key may ever be written into the API's file.
+grep -E '^(REQUIRED_KEYS|OPTIONAL_KEYS|GOOGLE_KEYS|PHOTO_KEYS)=' "$SCRIPT" | grep -qE '(^|[" ])AWS_' \
+  && fail "refresh-securevault-secrets.sh must not manage any AWS_* key"
+
+# Anchors keep the scheduler from drifting from the API service.
+grep -q '^    env_file: &securevault-api-env-file$' "$COMPOSE" || fail "securevault-api env_file: must carry the &securevault-api-env-file anchor"
 grep -q '^    environment: &securevault-api-env$' "$COMPOSE" || fail "securevault-api environment: must carry the &securevault-api-env anchor"
-sched_env="$(awk '
+sched="$(awk '
   /^  securevault-scheduler:[[:space:]]*$/ { in_svc = 1; next }
   in_svc && /^  [A-Za-z0-9_-]+:/ { in_svc = 0 }
-  in_svc && /^    environment:/ { print }
+  in_svc && /^    (env_file|environment):/ { print }
 ' "$COMPOSE")"
-[ "$sched_env" = "    environment: *securevault-api-env" ] || fail "securevault-scheduler must reuse the API's environment list (environment: *securevault-api-env)"
+[ "$sched" = "$(printf '    env_file: *securevault-api-env-file\n    environment: *securevault-api-env')" ] \
+  || fail "securevault-scheduler must reuse the API's env_file and environment anchors, got:\n$sched"
 
-echo "PASS: securevault-api receives $REQUIRED; the scheduler shares its list"
+echo "PASS: securevault services read only securevault/api.env (required: false); environment: holds only NODE_ENV/TRUST_PROXY literals"

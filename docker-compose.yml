@@ -100,65 +100,35 @@ services:
     # Non-root image (USER www-data); see README "Container hardening".
     cap_drop:
       - ALL
+    # Every app setting and secret comes from this file, which
+    # scripts/refresh-securevault-secrets.sh writes from SSM
+    # (/securevault/prod/*) at the start of each SecureVault deploy; none is
+    # forwarded from a shell any more, and none may be added to environment:
+    # below (a bare name there would override the file with the deploy shell's
+    # value, blank if unset -- how TRUST_PROXY and WEBAUTHN_* were once lost).
+    # ALLOWED_EXTENSION_ORIGINS is derived into the file from EXTENSION_IDS.
+    # The photo key in it belongs to the IAM user securevault-photos (p/* only);
+    # no AWS_* name is ever in it: the host's AWS CLI keys (deploy, SSM read)
+    # must never reach the API. required: false is load-bearing: every
+    # product's deploy runs compose on this file, and a missing hard-required
+    # env_file fails `docker compose config` for every service; the API's boot
+    # checks refuse to start without their config, so a missing file fails
+    # loudly on these two services only. The scheduler shares both lists.
+    env_file: &securevault-api-env-file
+      - path: /opt/secrets/securevault/api.env
+        required: false
+    # Literals only, so no deploy shell can unset them.
+    # No PORT and no TCP at all: PHP-FPM serves FastCGI on the unix socket
+    # /run/securevault-fpm/fpm.sock (the image's FPM_LISTEN default; production
+    # boot refuses any other value). Never set FPM_LISTEN. FPM_MAX_CHILDREN
+    # keeps the image default, 6.
+    # TRUST_PROXY=1: the API sits behind this repository's nginx, so it must
+    # trust one proxy hop to see the real client IP. Without it every client
+    # collapses into 127.0.0.1 and every one of SecureVault's rate limiters
+    # buckets all users together.
     environment: &securevault-api-env
-      - NODE_ENV
-      # No PORT and no TCP at all: PHP-FPM serves FastCGI on the unix socket
-      # /run/securevault-fpm/fpm.sock (the image's FPM_LISTEN default; production
-      # boot refuses any other value). Never forward FPM_LISTEN. FPM_MAX_CHILDREN
-      # keeps the image default, 6.
-      # The API sits behind this repository's nginx, so the API must trust one
-      # proxy hop to see the real client IP. Without it every client collapses
-      # into 127.0.0.1 and every one of SecureVault's rate limiters buckets all
-      # users together -- five contact submissions from one attacker then lock
-      # the contact form and password reset for everybody.
-      # SecureVault's deploy workflow has always exported TRUST_PROXY=1; it was
-      # simply never declared here, so it never reached the container. Found
-      # 2026-08-13 by comparing the workflow's exports against this list.
-      - TRUST_PROXY
-      - JWT_SECRET
-      - INHERITANCE_HINT_SECRET
-      # WebAuthn relying party. The API exits at startup without both
-      # (services/webauthn/rpConfig.js) — a credential minted under the wrong
-      # RP ID is permanently unusable, so refusing to boot is deliberate.
-      # Declared here for the same reason TRUST_PROXY above had to be: the
-      # deploy workflow exports them, but compose only forwards names on this
-      # list, so an export alone never reaches the container.
-      - WEBAUTHN_RP_ID
-      - WEBAUTHN_ORIGINS
-      - ALLOWED_ORIGINS
-      - DATABASE_URL
-      - GOOGLE_CLIENT_ID
-      - GOOGLE_CLIENT_SECRET
-      - GOOGLE_REDIRECT_URI
-      - FRONTEND_URL
-      - CAPTCHA_PROVIDER
-      - CAPTCHA_SECRET
-      - SMTP_HOST
-      - SMTP_PORT
-      - SMTP_SECURE
-      - SMTP_USER
-      - SMTP_PASS
-      - EMAIL_FROM
-      - PASSWORD_RESET_PATH
-      # Browser-extension sign-in (/api/auth/extension/*). SecureVault's deploy
-      # exports EXTENSION_IDS from the PRODUCTION_EXTENSION_IDS secret and derives
-      # ALLOWED_EXTENSION_ORIGINS (chrome-extension://<id>) from it -- once its
-      # branch fix/fix-all-2026-10-31 is merged; until then both are unset and
-      # the pass-through is a no-op. Compose only forwards names listed here,
-      # and CORS refuses an unlisted extension origin.
-      - EXTENSION_IDS
-      - ALLOWED_EXTENSION_ORIGINS
-      # Place photos (client-encrypted, stored in S3 bucket
-      # valtou-vault-photos-prod). SecureVault's deploy exports all five from
-      # GitHub secrets; OBJECT_STORE unset or "off" keeps photos off, so these
-      # are a no-op until it is set to "s3". The key belongs to the IAM user
-      # securevault-photos (p/* only). Never forward any AWS_* name here: the
-      # host's AWS CLI runs on the deploy key, which the API must not hold.
-      - OBJECT_STORE
-      - PHOTO_S3_BUCKET
-      - PHOTO_S3_REGION
-      - PHOTO_S3_ACCESS_KEY_ID
-      - PHOTO_S3_SECRET_ACCESS_KEY
+      - NODE_ENV=production
+      - TRUST_PROXY=1
     # FastCGI has no authentication, and loopback is shared with every other
     # host-network service here, so FPM listens on a unix socket in this volume
     # instead of 127.0.0.1:9000. Only this service and nginx (read-only) may mount
@@ -185,6 +155,7 @@ services:
     cap_drop:
       - ALL
     entrypoint: ["/usr/local/share/securevault/docker/scheduler-entrypoint.sh"]
+    env_file: *securevault-api-env-file
     environment: *securevault-api-env
     healthcheck:
       test: ["CMD", "php", "artisan", "securevault:scheduler-health"]

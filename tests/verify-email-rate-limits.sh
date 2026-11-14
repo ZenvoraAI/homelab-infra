@@ -62,9 +62,8 @@ count="$(grep -c 'limit_req zone=email_ep burst=3 nodelay;' "$ROOT/nginx/conf.d/
 # rather than "you are going too fast".
 require nginx/conf.d/valtou-api.conf 'limit_req_status 429;'
 
-# The passthrough that makes SecureVault's own limiters per-IP. A bare name in
-# a compose `environment:` list forwards the value from the deploy shell; if
-# the name is absent the variable is silently dropped.
-require docker-compose.yml '- TRUST_PROXY'
+# What makes SecureVault's own limiters per-IP. Now a literal in the compose
+# `environment:` list, so no deploy shell can drop or blank it.
+require docker-compose.yml '- TRUST_PROXY=1'
 
 echo 'PASS: email endpoint rate limiting'
