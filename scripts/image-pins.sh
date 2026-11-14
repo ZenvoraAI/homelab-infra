@@ -19,8 +19,7 @@ set -eu
 #                                   known-good one and forget the bad one. Changes
 #                                   state only -- run the service's deploy (or
 #                                   `docker compose up -d <service>` WITH its env)
-#                                   afterwards; dayandyou/securevault take their
-#                                   secrets from the deploy shell.
+#                                   afterwards.
 
 . "$(dirname -- "$0")/lib/image-pins-lib.sh"
 

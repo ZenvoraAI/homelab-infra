@@ -50,8 +50,6 @@ services:
       - family-api-sock:/run/family-api:ro
       - memorial-api-sock:/run/memorial-api:ro
       - zenvora-admin-sock:/run/zenvora-admin:ro
-      - dayandyou-staging-sock:/run/dayandyou-staging:ro
-      - dayandyou-prod-sock:/run/dayandyou-prod:ro
       # The Day and You API origin behind CloudFront (README "Day and You API
       # origin"): the FPM socket, the FastCGI include, and the origin-secret
       # map files. Those live outside git (root 0700 / 0600) and are
@@ -164,103 +162,6 @@ services:
       start_period: 60s
       retries: 3
     mem_limit: 256m
-  dayandyou-staging:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_STAGING_TAG:-staging}
-    container_name: homelab-dayandyou-staging
-    network_mode: host
-    restart: unless-stopped
-    logging: *default-logging
-    security_opt:
-      - no-new-privileges:true
-    # Non-root image (USER node/bun); see README "Container hardening".
-    cap_drop:
-      - ALL
-    environment:
-      - NODE_ENV
-      - PORT
-      - DATABASE_URL
-      - DIRECT_URL
-      - NEXTAUTH_SECRET
-      - NEXTAUTH_URL
-      - STRIPE_SECRET_KEY
-      - STRIPE_WEBHOOK_SECRET
-      - NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
-      - AWS_ACCESS_KEY_ID
-      - AWS_SECRET_ACCESS_KEY
-      - AWS_REGION
-      - AWS_S3_BUCKET
-      - ASSET_BASE_URL
-      - NEXT_PUBLIC_ASSET_BASE_URL
-      - AWS_SES_REGION
-      - AWS_SES_ACCESS_KEY_ID
-      - AWS_SES_SECRET_ACCESS_KEY
-      - AWS_SES_FROM
-      - ADMIN_EMAIL
-      - NEXT_PUBLIC_APP_URL
-      - SITE_MODE
-      # Staging-only HTTP Basic shield. Absent from dayandyou-prod on
-      # purpose: the app treats an unset value as "no gate".
-      - SITE_PASSWORD
-      # Enables the FORCED-sweep endpoint POST /api/internal/sweep-
-      # reservations only. Expired stock reservations are already reclaimed
-      # by an in-process timer every 5 minutes (instrumentation-node.ts),
-      # so this is an ops convenience, not a dependency.
-      - CRON_SECRET
-      # HTTP only on a unix socket in dayandyou-staging-sock, never 127.0.0.1:
-      # a port there is reachable from every host-network service
-      # (tests/verify-app-sockets.sh). A literal value, so no deploy shell can
-      # unset it. PORT above stays for images older than the socket support.
-      - LISTEN_SOCKET=/run/dayandyou-staging/http.sock
-    volumes:
-      - dayandyou-staging-sock:/run/dayandyou-staging
-    mem_limit: 350m
-  dayandyou-prod:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou:${DAYANDYOU_PROD_TAG:-release}
-    container_name: homelab-dayandyou-prod
-    network_mode: host
-    restart: unless-stopped
-    logging: *default-logging
-    security_opt:
-      - no-new-privileges:true
-    # Non-root image (USER node/bun); see README "Container hardening".
-    cap_drop:
-      - ALL
-    environment:
-      - NODE_ENV
-      - PORT
-      - DATABASE_URL
-      - DIRECT_URL
-      - NEXTAUTH_SECRET
-      - NEXTAUTH_URL
-      - STRIPE_SECRET_KEY
-      - STRIPE_WEBHOOK_SECRET
-      - NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
-      - AWS_ACCESS_KEY_ID
-      - AWS_SECRET_ACCESS_KEY
-      - AWS_REGION
-      - AWS_S3_BUCKET
-      - ASSET_BASE_URL
-      - NEXT_PUBLIC_ASSET_BASE_URL
-      - AWS_SES_REGION
-      - AWS_SES_ACCESS_KEY_ID
-      - AWS_SES_SECRET_ACCESS_KEY
-      - AWS_SES_FROM
-      - ADMIN_EMAIL
-      - NEXT_PUBLIC_APP_URL
-      - SITE_MODE
-      # Enables the FORCED-sweep endpoint POST /api/internal/sweep-
-      # reservations only. Expired stock reservations are already reclaimed
-      # by an in-process timer every 5 minutes (instrumentation-node.ts),
-      # so this is an ops convenience, not a dependency.
-      - CRON_SECRET
-      # HTTP only on a unix socket in dayandyou-prod-sock, never 127.0.0.1:
-      # a port there is reachable from every host-network service
-      # (tests/verify-app-sockets.sh). A literal value, so no deploy shell can
-      # unset it. PORT above stays for images older than the socket support.
-      - LISTEN_SOCKET=/run/dayandyou-prod/http.sock
-    volumes:
-      - dayandyou-prod-sock:/run/dayandyou-prod
-    mem_limit: 400m
   # Day and You's Laravel API (day-and-you-api), staging only. The static
   # storefront's CloudFront sends /api/* to api-origin-staging.dayandyou.com,
   # which nginx serves from this service's FPM socket. Its deploy pulls, starts
@@ -521,12 +422,10 @@ services:
 volumes:
   # SecureVault's PHP-FPM socket; see securevault-api.
   securevault-fpm: {}
-  # The apps' HTTP sockets; see api, memorial-api, zenvora-admin and dayandyou-*.
+  # The apps' HTTP sockets; see api, memorial-api and zenvora-admin.
   family-api-sock: {}
   memorial-api-sock: {}
   zenvora-admin-sock: {}
-  dayandyou-staging-sock: {}
-  dayandyou-prod-sock: {}
   # Day and You API staging's PHP-FPM sockets; see dayandyou-api-staging.
   dayandyou-api-fpm-staging: {}
 

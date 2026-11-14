@@ -15,8 +15,6 @@ release workflows remain in their own repositories.
 | `api` | `homelab-family-api` | none (HTTP on a unix socket, `family-api-sock` volume) | `family-api.valtou.com` | 640m |
 | `securevault-api` | `homelab-securevault-api` | none (FastCGI on a unix socket, `securevault-fpm` volume) | `api.valtou.com` | 512m |
 | `securevault-scheduler` | `homelab-securevault-scheduler` | — | none (no listener) | 256m |
-| `dayandyou-prod` | `homelab-dayandyou-prod` | none (HTTP on a unix socket, `dayandyou-prod-sock` volume) | `dayandyou.com`, `www.dayandyou.com` | 400m |
-| `dayandyou-staging` | `homelab-dayandyou-staging` | none (HTTP on a unix socket, `dayandyou-staging-sock` volume) | `staging.dayandyou.com` | 350m |
 | `dayandyou-api-staging` | `homelab-dayandyou-api-staging` | none (FastCGI on unix sockets, `dayandyou-api-fpm-staging` volume) | `api-origin-staging.dayandyou.com` (CloudFront origin only) | 320m |
 | `dayandyou-api-scheduler-staging` | `homelab-dayandyou-api-scheduler-staging` | — | none (no listener) | 128m |
 | `memorial-api` | `homelab-memorial-api` | none (HTTP on a unix socket, `memorial-api-sock` volume) | `api.aiqiuqi.com` | 192m |
@@ -24,6 +22,13 @@ release workflows remain in their own repositories.
 | `docker-socket-proxy` | `homelab-docker-socket-proxy` | none (internal network only) | none | 16m |
 | `docker-api-filter` | `homelab-docker-api-filter` | none (private network only) | none | 16m |
 | `zenvora-admin` | `homelab-zenvora-admin` | none (HTTP on a unix socket, `zenvora-admin-sock` volume) | `admin.valtou.com` | 128m |
+
+Day and You's storefront (`dayandyou.com`, `www.dayandyou.com`,
+`staging.dayandyou.com`) is a static site on S3 + CloudFront since 2026-11-14;
+those names do not resolve to this host. Only its Laravel API runs here
+(staging; a `dayandyou-api-prod` service for `api-origin.dayandyou.com` is to
+come). The old Next.js containers `dayandyou-staging` / `dayandyou-prod` and
+their `dayandyou.conf` vhosts were removed on 2026-11-15.
 
 Every service uses `network_mode: host` except `docker-socket-proxy`,
 `docker-api-filter` and `zenvora-admin`, which sit on two private bridge
@@ -91,14 +96,12 @@ oversubscribed OOM puts at risk.
 | api (family-media) | 640m | not measured | measure peak during an upload/video poster run; set ~1.5x peak |
 | securevault-api | 512m | 302 MiB peak (Laravel/FPM load test, 6 workers) | keep; FPM's own ceiling (6 x 192M) is above it by design |
 | securevault-scheduler | 256m | not measured | measure after the cutover |
-| dayandyou-prod | 400m | not measured | measure; Next.js `next start` baseline is typically 150-250 MB |
-| dayandyou-staging | 350m | not measured | first candidate for a cut (staging traffic); measure, then ~1.5x peak |
-| dayandyou-api-staging | 320m | not measured (main pool 2 + payments pool 1-2) | re-measure once the API's argon2 gate lands; the storefront's dayandyou-staging can shrink once the static site replaces it |
+| dayandyou-api-staging | 320m | not measured (main pool 2 + payments pool 1-2) | re-measure once the API's argon2 gate lands |
 | dayandyou-api-scheduler-staging | 128m | 93 MiB peak, measured locally | keep |
 | memorial-api | 192m | 171.9 MiB (89.5%) | keep or raise slightly; it is the one near its ceiling |
 | memorial-worker | 512m | not measured (raised for 50 MP photos, d864df6) | keep |
 | nginx / filter / proxy / zenvora-admin | 64m / 16m / 16m / 128m | small | keep |
-| **Total** | **3022 MiB** (3150 with the securevault branch) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
+| **Total** | **2800 MiB** (compose limits, 2026-11-15, after the Next.js storefront's 750 MiB left) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
 
 To gather the evidence (host, read-only, run over a normal week including a
 deploy and a photo upload):
@@ -110,8 +113,8 @@ free -m; ps -o rss=,cmd= -C postgres | awk '{s+=$1} END {print s/1024 " MiB post
 ```
 
 Until then, an OOM-ordering safety net is worth considering (not applied):
-`oom_score_adj: 500` on dayandyou-staging and memorial-worker, so the kernel
-kills those before Postgres or a production API.
+`oom_score_adj: 500` on memorial-worker and the staging API services, so the
+kernel kills those before Postgres or a production API.
 
 ## Images and tags
 
@@ -154,8 +157,6 @@ is a one-line flip plus the compose lines, kept on its own branch
 | `DOCKER_SOCKET_PROXY_IMAGE` | `docker-socket-proxy` | `tecnativa/docker-socket-proxy:<tag>@sha256:<digest>` |
 | `FAMILY_API_TAG` | `api` | tag of `family-media-api` |
 | `SECUREVAULT_API_TAG` | `securevault-api`, `securevault-scheduler` | tag of `securevault-api-laravel` |
-| `DAYANDYOU_STAGING_TAG` | `dayandyou-staging` | tag of `dayandyou` |
-| `DAYANDYOU_PROD_TAG` | `dayandyou-prod` | tag of `dayandyou` |
 | `DAYANDYOU_API_STAGING_TAG` | `dayandyou-api-staging`, `dayandyou-api-scheduler-staging` | tag of `dayandyou-api` |
 | `MEMORIAL_API_TAG` | `memorial-api` | tag of `aiqiuqi-memorial-api` |
 | `MEMORIAL_WORKER_TAG` | `memorial-worker` | tag of `aiqiuqi-memorial-worker` |
@@ -181,9 +182,8 @@ So `.env` always names the last known-good release:
   <service> <bad sha>` re-pins the previous known-good value and drops the bad
   one from the history. It refuses unless `.env` currently pins `<bad sha>`, so
   running it after a deploy that failed *before* promote (when `.env` still
-  holds the good release) cannot step back past a good one. It changes state only. Then recreate the service with its
-  environment. dayandyou and securevault get their secrets from their deploy
-  shell, so re-run that product's deploy, or `up` from a shell that has them.
+  holds the good release) cannot step back past a good one. It changes state only. Then recreate the service (re-run that product's
+  deploy, or `docker compose up -d --no-deps <service>`).
 - A manual or recovery `docker compose pull`/`up` gets exactly the pinned
   digest.
 
@@ -193,29 +193,23 @@ rollout; it never overwrites).
 
 ### Rollout (in this order)
 
-The product workflows do **not** call `promote`/`docker-prune.sh` yet, and
-day-and-you exports only `IMAGE_TAG`, which compose does not read for
-`dayandyou-*`. Until each product's patch lands, its deploys keep working
-because of the transition fallback (and, for the others, because their
-exported `*_TAG` beats `.env`).
+Not every product workflow calls `promote`/`docker-prune.sh` yet. Until each
+product's patch lands, its deploys keep working because of the transition
+fallback and because their exported `*_TAG` beats `.env`. (The original step 1,
+making the Next.js day-and-you deploys export their tag variables, went away
+with those services on 2026-11-15.)
 
-1. day-and-you first: export `DAYANDYOU_PROD_TAG="$IMAGE_TAG"` in
-   deploy-prod.yml and `DAYANDYOU_STAGING_TAG="$IMAGE_TAG"` in
-   staging-deploy.yml (inert against the old compose). **Do not seed before
-   this lands**: a seeded `DAYANDYOU_*_TAG` with nobody exporting it pins
-   dayandyou to the seeded release for ever, while its deploy runs migrations
-   and reports success.
-2. Merge this (transition mode) into homelab `main`. Nothing changes on the
+1. Merge this (transition mode) into homelab `main`. Nothing changes on the
    host until something runs compose; then the fallbacks give today's images,
    except that the third-party fallbacks are digests, so the next recreate of
    `docker-socket-proxy`/`docker-api-filter` (a zenvora deploy recreates them
    as dependencies) may pull a newer build of the same tag.
-3. On the host: `scripts/image-pins.sh seed`, then `promote zenvora-admin
+2. On the host: `scripts/image-pins.sh seed`, then `promote zenvora-admin
    <running sha>` by hand if seed refuses it (pre-transfer namespace), then
    `scripts/image-pins.sh check` until it exits 0.
-4. Land the product patches (promote after health, `docker-prune.sh` instead
-   of the 48h prune, dayandyou rollback via `get`), one product at a time.
-5. Only then merge the strict branch.
+3. Land the product patches (promote after health, `docker-prune.sh` instead
+   of the 48h prune), one product at a time.
+4. Only then merge the strict branch.
 
 ### nginx version
 
@@ -286,23 +280,15 @@ docker compose exec -T api node dist/probe.js  # family API (unix socket; /healt
 docker compose exec -T securevault-api /usr/local/share/securevault/docker/fcgi-probe.sh /readyz  # SecureVault API (FastCGI only)
 docker compose exec -T memorial-api node dist/probe.js /health/ready  # memorial API (unix socket)
 docker compose exec -T zenvora-admin bun src/probe.ts  # zenvora-admin (unix socket; /healthz)
-docker compose exec -T dayandyou-prod node server/probe.mjs     # Day and You production (unix socket; /api/health)
-docker compose exec -T dayandyou-staging node server/probe.mjs  # Day and You staging (unix socket; /api/health)
 docker compose exec -T dayandyou-api-staging fcgi-probe.sh /api/health  # Day and You API staging (FastCGI only)
 ```
-
-Day and You switches to its sockets only once both services run an image with
-`server/start.mjs` (day-and-you `feat/listen-socket`): deploy that image to
-staging and production first, then this compose and nginx change. An older
-image ignores `LISTEN_SOCKET`, keeps listening on `PORT`, and nginx answers 502
-— which also applies to a later rollback past that image.
 
 After deploying the socket change, confirm no app still answers on TCP, from a
 host-network container (each line must print `refused`):
 
 ```bash
 ADMIN_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' homelab-zenvora-admin | awk '{print $1}')"
-for target in 127.0.0.1:4000 127.0.0.1:3001 127.0.0.1:3100 "$ADMIN_IP:3100" 127.0.0.1:3002 127.0.0.1:3003; do
+for target in 127.0.0.1:4000 127.0.0.1:3001 127.0.0.1:3100 "$ADMIN_IP:3100"; do
   docker run --rm --network host busybox:1.37 nc -z -w 2 "${target%:*}" "${target##*:}" && echo "OPEN $target" || echo "refused $target"
 done
 ```
@@ -358,8 +344,8 @@ file on disk breaks nothing. Validate, then recreate.
 - The memorial services read `/opt/secrets/aiqiuqi-memorial/api.env` and
   `/opt/secrets/aiqiuqi-memorial/worker.env` through `env_file`. Do not
   hand-edit either one — see `scripts/` below.
-- The Day and You storefront receives runtime variables from its deployment
-  workflow; do not add its values to this repository.
+- The Day and You storefront is static (S3 + CloudFront) and has no runtime
+  or secrets on this host.
 - SecureVault (`securevault-api` and its scheduler) reads everything from
   `/opt/secrets/securevault/api.env` through `env_file` (`required: false`),
   `ubuntu` `0600` in an `ubuntu` `0700` directory; written only by
@@ -427,7 +413,7 @@ bash tests/verify-secret-backup-rotation.sh  # a rotation leaves exactly one .ba
 bash tests/verify-nginx-server-tokens.sh    # nginx does not advertise its version
 bash tests/verify-docker-api-allowlist.sh   # zenvora-admin reaches only GET /containers/json
 bash tests/verify-cloudflare-real-ip.sh      # the Cloudflare real-IP config exists and is well-formed
-bash tests/verify-admin-dayandyou-hardening.sh  # admin.valtou.com and dayandyou.com carry rate limits + security headers
+bash tests/verify-admin-hardening.sh        # admin.valtou.com carries rate limits + security headers
 bash tests/verify-image-pinning.sh           # every image is digest-pinned or a required env ref
 bash tests/verify-image-pins-script.sh       # pin/rollback/prune behaviour, stubbed docker
 bash tests/verify-nginx-image-branch.sh      # nginx fallback is a digest-pinned, supported stable branch
@@ -514,11 +500,12 @@ command line.
 
 ## Day and You API origin
 
-The Day and You storefront becomes a static site on S3 + CloudFront; CloudFront
+The Day and You storefront is a static site on S3 + CloudFront; CloudFront
 sends `/api/*` to `api-origin-staging.dayandyou.com` (Cloudflare proxied), which
 `nginx/conf.d/dayandyou-api-origin.conf` serves from `dayandyou-api-staging`'s
-PHP-FPM sockets. Browsers never use that name. Staging only for now; the
-existing `dayandyou.conf` vhosts are unchanged and stay as the rollback path.
+PHP-FPM sockets. Browsers never use that name. Staging only for now. The
+Next.js storefront's `dayandyou.conf` vhosts, once the rollback path, were
+removed on 2026-11-15 together with its containers.
 Runbook: private `aws-infrastructure` repo, `docs/dayandyou-static-frontend.md`.
 
 **Trust chain.** The firewall admits only Cloudflare, and
@@ -665,7 +652,6 @@ Applied only where the product's Dockerfile and runtime code (origin/main,
 | --- | --- | --- | --- | --- |
 | api (family-media) | yes | yes | no | `USER node`, CMD `node`. Writes local storage (`lib/storage/local.ts`) and `os.tmpdir()` (video posters); which paths are live in prod is in the host env file, not verifiable here |
 | securevault-api, securevault-scheduler | yes | yes | no | `USER www-data`. Not verified on a read-only root: the deploy runs artisan one-offs (preflight, migrate) in this service's config, and Laravel writes `storage/` and `bootstrap/cache` |
-| dayandyou-staging/prod | yes | yes | no | `USER node`, `next start` writes `.next` at runtime (image cache, ISR) |
 | dayandyou-api-staging, dayandyou-api-scheduler-staging | yes | yes | no | `USER www-data` (day-and-you-api Dockerfile), as securevault-api. Laravel writes `storage/` and `bootstrap/cache`; a read-only root with tmpfs is not verified yet |
 | memorial-api | yes | yes | **yes**, `/tmp` tmpfs 16m | `USER node`; `apps/api/src` only reads files; migrations run outside the container; Prisma 7 has no engine binary |
 | memorial-worker | yes | yes | no | `USER node`; ffmpeg/HEIF processing of 50 MP photos needs scratch space too large for a RAM tmpfs |
@@ -728,6 +714,14 @@ sudo certbot renew --dry-run
 cd /opt/homelab-infra
 docker compose logs --since 10m nginx
 ```
+
+The `dayandyou.com` (with `www`) and `staging.dayandyou.com` certificates
+served only the Next.js vhosts removed on 2026-11-15. Those names now resolve
+to CloudFront, so their HTTP-01 renewals can no longer reach this webroot and
+fail. Once nginx runs without `dayandyou.conf`, delete those lineages
+(`sudo certbot certificates` to confirm the names, then
+`sudo certbot delete --cert-name <name>`). `api-origin-staging.dayandyou.com`
+is a separate lineage and stays.
 
 Do not use `certbot --nginx`: the host nginx service is intentionally stopped.
 Do not repeat the migration's `certbot certonly --force-renewal` commands during

@@ -14,7 +14,7 @@ set -euo pipefail
 #   - FastCGI is reachable only through the socket volume, mounted by the API
 #     (rw) and nginx (ro), and the secret files reach nginx read-only.
 # Staging only: no prod map may be included until the prod secret file exists,
-# or nginx refuses to start. The storefront's dayandyou.conf stays as it was.
+# or nginx refuses to start.
 #
 # Pure repo test: reads only docker-compose.yml and the nginx config.
 
@@ -25,12 +25,11 @@ VHOST="$NGINX_ROOT/conf.d/dayandyou-api-origin.conf"
 HTTP_CONF="$NGINX_ROOT/conf.d/00-dayandyou-cloudfront.conf"
 INCLUDE="$NGINX_ROOT/dayandyou/fastcgi-dayandyou-api-cloudfront.conf"
 INCLUDE_PATH=/etc/nginx/dayandyou/fastcgi-dayandyou-api-cloudfront.conf
-STOREFRONT="$NGINX_ROOT/conf.d/dayandyou.conf"
 
 fail() { printf 'FAIL: %b\n' "$*" >&2; exit 1; }
 code() { sed -e 's/[[:space:]]*#.*$//' "$1"; }
 
-for f in "$VHOST" "$HTTP_CONF" "$INCLUDE" "$STOREFRONT"; do
+for f in "$VHOST" "$HTTP_CONF" "$INCLUDE"; do
   [ -f "$f" ] || fail "missing ${f#"$ROOT"/}"
 done
 
@@ -146,9 +145,5 @@ COMPOSE="$COMPOSE" ruby -ryaml -e '
   end
 ' >/dev/null
 grep -q '^  dayandyou-api-fpm-staging: {}$' "$COMPOSE" || fail "top-level volumes: must declare dayandyou-api-fpm-staging"
-
-# --- the storefront vhosts stay as they were (rollback path) --------------------
-code "$STOREFRONT" | grep -nE 'fastcgi|dayandyou_api|dayandyou_cf_|dayandyou_viewer_ip|dayandyou_origin_ok|location[^{]*/api' \
-  && fail "dayandyou.conf must stay unchanged: the API is served only on api-origin*"
 
 echo "PASS: api-origin-staging refuses requests without the origin secret / viewer address, passes PHP only the viewer IP, throttles per viewer"

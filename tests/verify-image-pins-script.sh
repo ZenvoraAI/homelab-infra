@@ -8,7 +8,7 @@ set -euo pipefail
 #   - moving tags are refused, so .env can only ever hold a pinned ref
 #   - promote pins the pulled image's digest, keeps unrelated .env lines
 #   - rollback re-pins the previous known-good release in .env -- the value a
-#     later `docker compose pull` resolves -- instead of retagging :release
+#     later `docker compose pull` resolves -- instead of retagging :staging
 #     locally, and forgets the bad release so it is never rolled back *to*
 #   - seed pins what each container runs now, by digest, without overwriting
 #   - prune keeps the pinned image + IMAGE_KEEP_GOOD known-good per service,
@@ -63,7 +63,9 @@ expect_refused() { if "$PINS" "$@" 2>/dev/null; then fail "accepted: $*"; fi; }
 SHA1=1111111111111111111111111111111111111111
 SHA2=2222222222222222222222222222222222222222
 SHA3=3333333333333333333333333333333333333333
-REPO=ghcr.io/zenvoraai/dayandyou
+# dayandyou-api-staging is the example service: a tag-kind pin whose variable,
+# DAYANDYOU_API_STAGING_TAG, dayandyou-api-scheduler-staging shares.
+REPO=ghcr.io/zenvoraai/dayandyou-api
 # What `docker image inspect` reports after the deploy pulled each tag.
 for n in 1 2 3; do
   sha="$(printf "%040d" 0 | tr 0 "$n")"
@@ -73,7 +75,7 @@ done
 # --- refusing moving tags ----------------------------------------------------
 printf 'GHCR_OWNER=zenvoraai\n' >"$IMAGE_PINS_ENV_FILE"
 for bad in latest release staging abc123 "$SHA1 x" "$SHA1@sha256:short" "release@sha256:$(printf '%064d' 1)x"; do
-  expect_refused promote dayandyou-prod "$bad"
+  expect_refused promote dayandyou-api-staging "$bad"
 done
 expect_refused promote nginx nginx:1.27-alpine
 expect_refused promote nginx "nginx:1.27-alpine@$(dg 9)
@@ -82,45 +84,46 @@ expect_refused promote no-such-service "$SHA1"
 [ "$(cat "$IMAGE_PINS_ENV_FILE")" = "GHCR_OWNER=zenvoraai" ] || fail "a refused promote changed .env:\n$(cat "$IMAGE_PINS_ENV_FILE")"
 
 # --- promote pins the digest ---------------------------------------------------
-"$PINS" promote dayandyou-prod "$SHA1" >/dev/null
-[ "$(env_value DAYANDYOU_PROD_TAG)" = "$SHA1@$(dg 1)" ] || fail "promote did not pin the digest: $(env_value DAYANDYOU_PROD_TAG)"
+"$PINS" promote dayandyou-api-staging "$SHA1" >/dev/null
+[ "$(env_value DAYANDYOU_API_STAGING_TAG)" = "$SHA1@$(dg 1)" ] || fail "promote did not pin the digest: $(env_value DAYANDYOU_API_STAGING_TAG)"
 [ "$(env_value GHCR_OWNER)" = zenvoraai ] || fail "promote dropped an unrelated .env line"
-"$PINS" promote dayandyou-prod "$SHA2" >/dev/null
-"$PINS" promote dayandyou-prod "$SHA2" >/dev/null   # re-run of the same deploy
-[ "$(history_of DAYANDYOU_PROD_TAG)" = "$SHA1@$(dg 1)
-$SHA2@$(dg 2)" ] || fail "unexpected history:\n$(history_of DAYANDYOU_PROD_TAG)"
-[ "$(grep -c '^DAYANDYOU_PROD_TAG=' "$IMAGE_PINS_ENV_FILE")" = 1 ] || fail ".env has duplicate DAYANDYOU_PROD_TAG lines"
-[ "$("$PINS" get dayandyou-prod)" = "$SHA2@$(dg 2)" ] || fail "get does not return the pinned value"
+"$PINS" promote dayandyou-api-staging "$SHA2" >/dev/null
+"$PINS" promote dayandyou-api-staging "$SHA2" >/dev/null   # re-run of the same deploy
+[ "$(history_of DAYANDYOU_API_STAGING_TAG)" = "$SHA1@$(dg 1)
+$SHA2@$(dg 2)" ] || fail "unexpected history:\n$(history_of DAYANDYOU_API_STAGING_TAG)"
+[ "$(grep -c '^DAYANDYOU_API_STAGING_TAG=' "$IMAGE_PINS_ENV_FILE")" = 1 ] || fail ".env has duplicate DAYANDYOU_API_STAGING_TAG lines"
+[ "$("$PINS" get dayandyou-api-staging)" = "$SHA2@$(dg 2)" ] || fail "get does not return the pinned value"
 
 # --- rollback must name the release it is rolling back from ------------------
 # Run after a deploy that failed before promote, a bare rollback would step
 # back from the still-good pin and drop it from history.
 before="$(cat "$IMAGE_PINS_ENV_FILE")"
-expect_refused rollback dayandyou-prod
-expect_refused rollback dayandyou-prod "$SHA1"
+expect_refused rollback dayandyou-api-staging
+expect_refused rollback dayandyou-api-staging "$SHA1"
 [ "$(cat "$IMAGE_PINS_ENV_FILE")" = "$before" ] || fail "a refused rollback changed .env"
-[ "$(history_of DAYANDYOU_PROD_TAG | wc -l | tr -d ' ')" = 2 ] || fail "a refused rollback changed the history"
+[ "$(history_of DAYANDYOU_API_STAGING_TAG | wc -l | tr -d ' ')" = 2 ] || fail "a refused rollback changed the history"
 
 # --- rollback re-pins, not retags ---------------------------------------------
 : >"$FIX/calls.log"
-"$PINS" rollback dayandyou-prod "$SHA2" >/dev/null
-[ "$(env_value DAYANDYOU_PROD_TAG)" = "$SHA1@$(dg 1)" ] || fail "rollback did not re-pin the previous release: $(env_value DAYANDYOU_PROD_TAG)"
-[ "$(history_of DAYANDYOU_PROD_TAG)" = "$SHA1@$(dg 1)" ] || fail "rollback kept the bad release as known-good"
+"$PINS" rollback dayandyou-api-staging "$SHA2" >/dev/null
+[ "$(env_value DAYANDYOU_API_STAGING_TAG)" = "$SHA1@$(dg 1)" ] || fail "rollback did not re-pin the previous release: $(env_value DAYANDYOU_API_STAGING_TAG)"
+[ "$(history_of DAYANDYOU_API_STAGING_TAG)" = "$SHA1@$(dg 1)" ] || fail "rollback kept the bad release as known-good"
 grep -q '^tag ' "$FIX/calls.log" && fail "rollback retagged an image"
 . "$ROOT/scripts/lib/image-pins-lib.sh"
-resolved="$(pins_full_ref DAYANDYOU_PROD_TAG "$(env_value DAYANDYOU_PROD_TAG)")"
+resolved="$(pins_full_ref DAYANDYOU_API_STAGING_TAG "$(env_value DAYANDYOU_API_STAGING_TAG)")"
 [ "$resolved" = "$REPO:$SHA1@$(dg 1)" ] || fail "compose would resolve $resolved, not the rolled-back digest"
 before="$(cat "$IMAGE_PINS_ENV_FILE")"
-expect_refused rollback dayandyou-prod "$SHA1@$(dg 1)"
+expect_refused rollback dayandyou-api-staging "$SHA1@$(dg 1)"
 [ "$(cat "$IMAGE_PINS_ENV_FILE")" = "$before" ] || fail "a refused rollback changed .env"
-[ "$(env_value DAYANDYOU_STAGING_TAG)" = "" ] || fail "prod promote/rollback touched staging"
+[ "$("$PINS" get dayandyou-api-scheduler-staging)" = "$SHA1@$(dg 1)" ] || fail "the scheduler, which shares DAYANDYOU_API_STAGING_TAG, did not follow the rollback"
+[ "$(env_value SECUREVAULT_API_TAG)" = "" ] || fail "dayandyou-api-staging promote/rollback touched another variable"
 
 # --- .env keeps its mode; `export VAR=` lines are understood ---------------------
 chmod 640 "$IMAGE_PINS_ENV_FILE"
-"$PINS" promote dayandyou-prod "$SHA2" >/dev/null
+"$PINS" promote dayandyou-api-staging "$SHA2" >/dev/null
 mode="$(stat -c %a "$IMAGE_PINS_ENV_FILE" 2>/dev/null || stat -f %Lp "$IMAGE_PINS_ENV_FILE")"
 [ "$mode" = 640 ] || fail "promote changed .env's mode to $mode (compose run as another user could no longer read it)"
-"$PINS" rollback dayandyou-prod "$SHA2" >/dev/null
+"$PINS" rollback dayandyou-api-staging "$SHA2" >/dev/null
 echo "export FAMILY_API_TAG=$SHA3@$(dg 3)" >>"$IMAGE_PINS_ENV_FILE"
 [ "$("$PINS" get api)" = "$SHA3@$(dg 3)" ] || fail "get ignores an 'export VAR=' line, which compose reads"
 echo "$REPO@$(dg 3)" >"$FIX/digests/$(key "ghcr.io/zenvoraai/family-media-api:$SHA2")"
@@ -143,10 +146,9 @@ seed_container homelab-docker-api-filter nginx:1.27-alpine sha256:img-nginx "ngi
 seed_container homelab-docker-socket-proxy tecnativa/docker-socket-proxy:0.3 sha256:img-dsp "tecnativa/docker-socket-proxy@$(dg 21)"
 seed_container homelab-family-api "ghcr.io/zenvoraai/family-media-api:$SHA3" sha256:img-fam "ghcr.io/zenvoraai/family-media-api@$(dg 22)"
 seed_container homelab-securevault-api ghcr.io/zenvoraai/securevault-api-laravel:latest sha256:img-sv "ghcr.io/zenvoraai/securevault-api-laravel@$(dg 23)"
-# Already pinned by promote above; seed must not replace it with :release.
-seed_container homelab-dayandyou-prod "$REPO:release" sha256:img-dyp "$REPO@$(dg 30)"
-seed_container homelab-dayandyou-staging "$REPO:staging" sha256:img-dys "$REPO@$(dg 24)"
-seed_container homelab-dayandyou-api-staging ghcr.io/zenvoraai/dayandyou-api:staging sha256:img-dyas "ghcr.io/zenvoraai/dayandyou-api@$(dg 28)"
+# Already pinned by promote above; seed must not replace it with :staging.
+seed_container homelab-dayandyou-api-staging "$REPO:staging" sha256:img-dyas "$REPO@$(dg 28)"
+seed_container homelab-dayandyou-api-scheduler-staging "$REPO:staging" sha256:img-dyas "$REPO@$(dg 28)"
 seed_container homelab-memorial-api ghcr.io/zenvoraai/aiqiuqi-memorial-api:latest sha256:img-ma "ghcr.io/zenvoraai/aiqiuqi-memorial-api@$(dg 25)"
 seed_container homelab-memorial-worker ghcr.io/zenvoraai/aiqiuqi-memorial-worker:latest sha256:img-mw "ghcr.io/zenvoraai/aiqiuqi-memorial-worker@$(dg 26)"
 # Running from the pre-transfer namespace: must not be pinned against zenvoraai.
@@ -154,10 +156,10 @@ seed_container homelab-zenvora-admin ghcr.io/qclawchang/zenvora-admin:latest sha
 
 if "$PINS" seed >/dev/null 2>"$TMP/seed.err"; then fail "seed succeeded although zenvora-admin runs a foreign repo"; fi
 grep -q 'homelab-zenvora-admin runs ghcr.io/qclawchang' "$TMP/seed.err" || fail "seed did not explain the foreign repo:\n$(cat "$TMP/seed.err")"
-[ "$(env_value DAYANDYOU_PROD_TAG)" = "$SHA1@$(dg 1)" ] || fail "seed overwrote an existing pin"
-[ "$(env_value DAYANDYOU_STAGING_TAG)" = "staging@$(dg 24)" ] || fail "staging seeded as $(env_value DAYANDYOU_STAGING_TAG)"
+[ "$(env_value DAYANDYOU_API_STAGING_TAG)" = "$SHA1@$(dg 1)" ] || fail "seed overwrote an existing pin"
+[ "$(grep -c '^DAYANDYOU_API_STAGING_TAG=' "$IMAGE_PINS_ENV_FILE")" = 1 ] || fail "seed wrote a second DAYANDYOU_API_STAGING_TAG line for the scheduler"
+[ "$(env_value FAMILY_API_TAG)" = "$SHA3@$(dg 22)" ] || fail "a commit-SHA tag seeded as $(env_value FAMILY_API_TAG)"
 [ "$(env_value SECUREVAULT_API_TAG)" = "latest@$(dg 23)" ] || fail ":latest must be seeded with its digest"
-[ "$(env_value DAYANDYOU_API_STAGING_TAG)" = "staging@$(dg 28)" ] || fail "API staging seeded as $(env_value DAYANDYOU_API_STAGING_TAG)"
 [ "$(env_value NGINX_IMAGE)" = "nginx:1.27-alpine@$(dg 20)" ] || fail "nginx seeded as $(env_value NGINX_IMAGE)"
 [ "$(env_value DOCKER_SOCKET_PROXY_IMAGE)" = "tecnativa/docker-socket-proxy:0.3@$(dg 21)" ] || fail "proxy seeded as $(env_value DOCKER_SOCKET_PROXY_IMAGE)"
 [ -z "$(env_value ZENVORA_ADMIN_TAG)" ] || fail "foreign-repo zenvora-admin was pinned"
@@ -173,17 +175,17 @@ grep -q 'image prune' "$FIX/calls.log" && fail "prune touched dangling images wi
 # --- prune keeps the window ---------------------------------------------------
 "$PINS" promote zenvora-admin "$SHA1" >/dev/null
 "$PINS" check >/dev/null || fail "check failed with every variable pinned"
-# dayandyou-prod history: 5 releases; the newest 3 + the pinned one are kept.
+# dayandyou-api-staging history: 5 releases; the newest 3 + the pinned one are kept.
 for n in 4 5 6 7; do
   sha="$(printf "%040d" 0 | tr 0 "$n")"
   echo "$REPO@$(dg "$n")" >"$FIX/digests/$(key "$REPO:$sha")"
-  "$PINS" promote dayandyou-prod "$sha" >/dev/null
+  "$PINS" promote dayandyou-api-staging "$sha" >/dev/null
 done
-for n in 1 4 5 6 7 24; do echo "id-$n" >"$FIX/ids/$(key "$REPO@$(dg "$n")")"; done
+for n in 1 4 5 6 7; do echo "id-$n" >"$FIX/ids/$(key "$REPO@$(dg "$n")")"; done
 {
-  for n in 1 4 5 6 7; do sha="$(printf "%040d" 0 | tr 0 "$n")"; echo "id-$n $REPO $sha $(dg "$n")"; done
-  echo "id-24 $REPO <none> $(dg 24)"           # staging, pulled by digest
-  echo "id-old $REPO release $(dg 99)"         # the old moving tag
+  for n in 1 4 6 7; do sha="$(printf "%040d" 0 | tr 0 "$n")"; echo "id-$n $REPO $sha $(dg "$n")"; done
+  echo "id-5 $REPO <none> $(dg 5)"             # a kept release, listed by digest only
+  echo "id-old $REPO release $(dg 99)"         # an old moving tag
   echo "id-busy $REPO staging $(dg 98)"        # used by a stopped container
 } >"$FIX/images/$(key "$REPO")"
 echo "$REPO:staging" >"$FIX/inuse"
@@ -198,9 +200,9 @@ done
 # keep set for that repo would remove its rollback images.
 mv "$FIX/ids/$(key "$REPO@$(dg 7)")" "$TMP/id7"
 : >"$FIX/rm.log"
-if "$PRUNE" >"$TMP/unresolved.out" 2>&1; then fail "prune ran although the pinned dayandyou-prod image does not resolve"; fi
+if "$PRUNE" >"$TMP/unresolved.out" 2>&1; then fail "prune ran although the pinned dayandyou-api-staging image does not resolve"; fi
 [ ! -s "$FIX/rm.log" ] || fail "prune removed images although a pin does not resolve:\n$(cat "$FIX/rm.log")"
-grep -q 'DAYANDYOU_PROD_TAG.*does not resolve' "$TMP/unresolved.out" || fail "prune did not say which pin failed:\n$(cat "$TMP/unresolved.out")"
+grep -q 'DAYANDYOU_API_STAGING_TAG.*does not resolve' "$TMP/unresolved.out" || fail "prune did not say which pin failed:\n$(cat "$TMP/unresolved.out")"
 mv "$TMP/id7" "$FIX/ids/$(key "$REPO@$(dg 7)")"
 
 # --- prune waits for the pins lock ----------------------------------------------
@@ -227,10 +229,10 @@ rm "$FIX/images-fail/$(key "$REPO")"
 # --- a lock left by a killed process is cleared; a live holder is waited on -----
 sh -c 'exit 0' & dead=$!; wait "$dead"
 mkdir "$IMAGE_PINS_STATE_DIR/.lock"; echo "$dead" >"$IMAGE_PINS_STATE_DIR/.lock/pid"
-"$PINS" promote dayandyou-prod "$(printf "%040d" 0 | tr 0 7)" >/dev/null 2>"$TMP/stale.err" || fail "promote failed on a stale lock:\n$(cat "$TMP/stale.err")"
+"$PINS" promote dayandyou-api-staging "$(printf "%040d" 0 | tr 0 7)" >/dev/null 2>"$TMP/stale.err" || fail "promote failed on a stale lock:\n$(cat "$TMP/stale.err")"
 grep -q "stale lock" "$TMP/stale.err" || fail "stale lock cleared silently"
 mkdir "$IMAGE_PINS_STATE_DIR/.lock"; echo "$$" >"$IMAGE_PINS_STATE_DIR/.lock/pid"
-if "$PINS" promote dayandyou-prod "$(printf "%040d" 0 | tr 0 7)" >/dev/null 2>&1; then fail "promote took a lock held by a live process"; fi
+if "$PINS" promote dayandyou-api-staging "$(printf "%040d" 0 | tr 0 7)" >/dev/null 2>&1; then fail "promote took a lock held by a live process"; fi
 rm -rf "$IMAGE_PINS_STATE_DIR/.lock"
 
 : >"$FIX/rm.log"
@@ -249,11 +251,11 @@ lockrun() {  # runs seed in the background against a fresh, empty .env
 # A holder killed between mkdir and writing its PID leaves an empty lock: it is
 # reclaimed once older than a minute, and waited on while fresh.
 mkdir -p "$TMP/empty"; mkdir "$TMP/empty/.lock"
-if IMAGE_PINS_ENV_FILE="$TMP/empty.env" IMAGE_PINS_STATE_DIR="$TMP/empty" "$PINS" promote dayandyou-prod "$SHA1" >/dev/null 2>&1; then
+if IMAGE_PINS_ENV_FILE="$TMP/empty.env" IMAGE_PINS_STATE_DIR="$TMP/empty" "$PINS" promote dayandyou-api-staging "$SHA1" >/dev/null 2>&1; then
   fail "promote took a fresh lock that has no PID yet"
 fi
 touch -t 202001010000 "$TMP/empty/.lock"
-IMAGE_PINS_ENV_FILE="$TMP/empty.env" IMAGE_PINS_STATE_DIR="$TMP/empty" "$PINS" promote dayandyou-prod "$SHA1" >/dev/null 2>"$TMP/empty.err" \
+IMAGE_PINS_ENV_FILE="$TMP/empty.env" IMAGE_PINS_STATE_DIR="$TMP/empty" "$PINS" promote dayandyou-api-staging "$SHA1" >/dev/null 2>"$TMP/empty.err" \
   || fail "an old lock with no PID blocked promote for ever:\n$(cat "$TMP/empty.err")"
 
 rm -rf "$TMP/sig"; : >"$TMP/sig.env"; touch "$FIX/slow"
@@ -262,7 +264,7 @@ lockrun
 kill -KILL "$pid"; wait "$pid" 2>/dev/null || true
 [ -d "$TMP/sig/.lock" ] || fail "test setup: SIGKILL should leave the lock behind"
 rm -f "$FIX/slow"
-IMAGE_PINS_ENV_FILE="$TMP/sig.env" IMAGE_PINS_STATE_DIR="$TMP/sig" "$PINS" promote dayandyou-prod "$SHA1" >/dev/null 2>&1 \
+IMAGE_PINS_ENV_FILE="$TMP/sig.env" IMAGE_PINS_STATE_DIR="$TMP/sig" "$PINS" promote dayandyou-api-staging "$SHA1" >/dev/null 2>&1 \
   || fail "the lock of a SIGKILLed run blocked the next promote"
 : >"$TMP/sig.env"; touch "$FIX/slow"
 lockrun

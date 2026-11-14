@@ -44,8 +44,6 @@ nginx|homelab-nginx|NGINX_IMAGE|image||nginx:1.30.6-alpine@sha256:0e52bd054126cd
 api|homelab-family-api|FAMILY_API_TAG|tag|family-media-api|latest
 securevault-api|homelab-securevault-api|SECUREVAULT_API_TAG|tag|securevault-api-laravel|latest
 securevault-scheduler|homelab-securevault-scheduler|SECUREVAULT_API_TAG|tag|securevault-api-laravel|latest
-dayandyou-staging|homelab-dayandyou-staging|DAYANDYOU_STAGING_TAG|tag|dayandyou|staging
-dayandyou-prod|homelab-dayandyou-prod|DAYANDYOU_PROD_TAG|tag|dayandyou|release
 dayandyou-api-staging|homelab-dayandyou-api-staging|DAYANDYOU_API_STAGING_TAG|tag|dayandyou-api|staging
 dayandyou-api-scheduler-staging|homelab-dayandyou-api-scheduler-staging|DAYANDYOU_API_STAGING_TAG|tag|dayandyou-api|staging
 memorial-api|homelab-memorial-api|MEMORIAL_API_TAG|tag|aiqiuqi-memorial-api|latest

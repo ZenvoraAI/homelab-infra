@@ -25,9 +25,7 @@ NGINX_DIR="$NGINX_ROOT/conf.d"
 # service volume socket-dir vhost old-port
 APPS="api family-api-sock /run/family-api family-api.conf 4000
 memorial-api memorial-api-sock /run/memorial-api api.aiqiuqi.com.conf 3001
-zenvora-admin zenvora-admin-sock /run/zenvora-admin admin.valtou.com.conf 3100
-dayandyou-staging dayandyou-staging-sock /run/dayandyou-staging dayandyou.conf 3002
-dayandyou-prod dayandyou-prod-sock /run/dayandyou-prod dayandyou.conf 3003"
+zenvora-admin zenvora-admin-sock /run/zenvora-admin admin.valtou.com.conf 3100"
 
 fail() { printf 'FAIL: %b\n' "$*" >&2; exit 1; }
 
@@ -53,7 +51,7 @@ nginx - $volume:$dir:ro
   conf="$NGINX_DIR/$vhost"
   proxies="$(sed -e 's/[[:space:]]*#.*$//' "$conf" | grep -oE 'proxy_pass[[:space:]]+[^;]+;' || true)"
   [ -n "$proxies" ] || fail "$vhost has no proxy_pass"
-  # A vhost may serve several apps (dayandyou.conf: prod and staging); each of
+  # A vhost may serve several apps; each of
   # its proxy_passes must go to the socket of one of them, and this app's
   # socket must be among them.
   vhost_sockets="$(printf '%s\n' "$APPS" | awk -v v="$vhost" '$4 == v { printf "%s%s", sep, $3; sep = "|" }')"
@@ -78,4 +76,4 @@ done <<< "$APPS"
 grep -qE '^[[:space:]]*proxy_set_header[[:space:]]+CF-Connecting-IP[[:space:]]+\$remote_addr;' "$NGINX_DIR/family-api.conf" \
   || fail "family-api.conf must overwrite CF-Connecting-IP with \$remote_addr"
 
-echo "PASS: the family, memorial, admin and dayandyou apps are reached only over their unix sockets; only each app and nginx mount them"
+echo "PASS: the family, memorial and admin apps are reached only over their unix sockets; only each app and nginx mount them"
