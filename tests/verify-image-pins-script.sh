@@ -146,6 +146,7 @@ seed_container homelab-securevault-api ghcr.io/zenvoraai/securevault-api-laravel
 # Already pinned by promote above; seed must not replace it with :release.
 seed_container homelab-dayandyou-prod "$REPO:release" sha256:img-dyp "$REPO@$(dg 30)"
 seed_container homelab-dayandyou-staging "$REPO:staging" sha256:img-dys "$REPO@$(dg 24)"
+seed_container homelab-dayandyou-api-staging ghcr.io/zenvoraai/dayandyou-api:staging sha256:img-dyas "ghcr.io/zenvoraai/dayandyou-api@$(dg 28)"
 seed_container homelab-memorial-api ghcr.io/zenvoraai/aiqiuqi-memorial-api:latest sha256:img-ma "ghcr.io/zenvoraai/aiqiuqi-memorial-api@$(dg 25)"
 seed_container homelab-memorial-worker ghcr.io/zenvoraai/aiqiuqi-memorial-worker:latest sha256:img-mw "ghcr.io/zenvoraai/aiqiuqi-memorial-worker@$(dg 26)"
 # Running from the pre-transfer namespace: must not be pinned against zenvoraai.
@@ -156,6 +157,7 @@ grep -q 'homelab-zenvora-admin runs ghcr.io/qclawchang' "$TMP/seed.err" || fail 
 [ "$(env_value DAYANDYOU_PROD_TAG)" = "$SHA1@$(dg 1)" ] || fail "seed overwrote an existing pin"
 [ "$(env_value DAYANDYOU_STAGING_TAG)" = "staging@$(dg 24)" ] || fail "staging seeded as $(env_value DAYANDYOU_STAGING_TAG)"
 [ "$(env_value SECUREVAULT_API_TAG)" = "latest@$(dg 23)" ] || fail ":latest must be seeded with its digest"
+[ "$(env_value DAYANDYOU_API_STAGING_TAG)" = "staging@$(dg 28)" ] || fail "API staging seeded as $(env_value DAYANDYOU_API_STAGING_TAG)"
 [ "$(env_value NGINX_IMAGE)" = "nginx:1.27-alpine@$(dg 20)" ] || fail "nginx seeded as $(env_value NGINX_IMAGE)"
 [ "$(env_value DOCKER_SOCKET_PROXY_IMAGE)" = "tecnativa/docker-socket-proxy:0.3@$(dg 21)" ] || fail "proxy seeded as $(env_value DOCKER_SOCKET_PROXY_IMAGE)"
 [ -z "$(env_value ZENVORA_ADMIN_TAG)" ] || fail "foreign-repo zenvora-admin was pinned"

@@ -52,6 +52,13 @@ services:
       - zenvora-admin-sock:/run/zenvora-admin:ro
       - dayandyou-staging-sock:/run/dayandyou-staging:ro
       - dayandyou-prod-sock:/run/dayandyou-prod:ro
+      # The Day and You API origin behind CloudFront (README "Day and You API
+      # origin"): the FPM socket, the FastCGI include, and the origin-secret
+      # map files. Those live outside git (root 0700 / 0600) and are
+      # include-d at http level, so a missing file stops nginx from starting.
+      - dayandyou-api-fpm-staging:/run/dayandyou-api-fpm-staging:ro
+      - ./nginx/dayandyou:/etc/nginx/dayandyou:ro
+      - /opt/secrets/dayandyou:/etc/nginx/dayandyou-secrets:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/lib/homelab-acme:/var/www/certbot:ro
     mem_limit: 64m
@@ -283,6 +290,83 @@ services:
     volumes:
       - dayandyou-prod-sock:/run/dayandyou-prod
     mem_limit: 400m
+  # Day and You's Laravel API (day-and-you-api), staging only. The static
+  # storefront's CloudFront sends /api/* to api-origin-staging.dayandyou.com,
+  # which nginx serves from this service's FPM socket. Its deploy pulls, starts
+  # and rolls back both services by these names and DAYANDYOU_API_STAGING_TAG;
+  # rollback re-tags the previous image :staging, so that default must stay.
+  dayandyou-api-staging:
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou-api:${DAYANDYOU_API_STAGING_TAG:-staging}
+    container_name: homelab-dayandyou-api-staging
+    network_mode: host
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # Non-root image (USER www-data, as securevault-api); see README "Container hardening".
+    cap_drop:
+      - ALL
+    # Names only: the values come from the API's deploy shell. The scheduler
+    # shares this list; the two FPM_* literals are inert there (no FPM).
+    environment: &dayandyou-api-staging-env
+      - DATABASE_URL
+      # Same value as the storefront's NEXTAUTH_SECRET (stored TOTP secrets,
+      # checkout-token key); not rotatable without a re-encryption migration.
+      - DAYANDYOU_ROOT_SECRET
+      - APP_KEY
+      - APP_URL
+      - STRIPE_SECRET_KEY
+      - STRIPE_WEBHOOK_SECRET
+      - SITE_MODE
+      # REQUIRED on staging: unset, the API serves ungated. The staging deploy
+      # stops this service if its probe gets through without credentials.
+      - SITE_PASSWORD
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_REGION
+      - AWS_S3_BUCKET
+      - ASSET_BASE_URL
+      - AWS_SES_REGION
+      - AWS_SES_ACCESS_KEY_ID
+      - AWS_SES_SECRET_ACCESS_KEY
+      - AWS_SES_FROM
+      - ADMIN_EMAIL
+      # Static storefront rebuild after product edits. Optional: any of the
+      # four unset turns it off; the scheduler sends the debounced dispatch.
+      - FRONTEND_REBUILD_TOKEN
+      - FRONTEND_REBUILD_REPO
+      - FRONTEND_REBUILD_WORKFLOW
+      - FRONTEND_REBUILD_REF
+      # Main pool 2; payments pool 1 idle worker plus one forked on demand.
+      - FPM_MAX_CHILDREN=2
+      - FPM_PAYMENTS_PM=dynamic
+    # FastCGI has no authentication and loopback is shared by every
+    # host-network service, so FPM listens only on unix sockets (fpm.sock,
+    # fpm-payments.sock) in this volume. Only this service and nginx
+    # (read-only) mount it (tests/verify-dayandyou-api-origin.sh).
+    volumes:
+      - dayandyou-api-fpm-staging:/run/dayandyou-api-fpm
+    # Main pool 2 + payments pool 1-2; re-measure once the argon2 gate lands.
+    mem_limit: 320m
+  # Same image and environment; runs the schedule (stock-reservation sweep,
+  # frontend-rebuild dispatch) instead of FPM, so it mounts no socket volume.
+  # The image's HEALTHCHECK pings FPM, which does not run here.
+  dayandyou-api-scheduler-staging:
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/dayandyou-api:${DAYANDYOU_API_STAGING_TAG:-staging}
+    container_name: homelab-dayandyou-api-scheduler-staging
+    network_mode: host
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    entrypoint: ["dayandyou-scheduler-entrypoint"]
+    environment: *dayandyou-api-staging-env
+    healthcheck:
+      disable: true
+    # Measured peak 93 MiB locally (schedule:run boots every minute).
+    mem_limit: 128m
   memorial-api:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-api:${MEMORIAL_API_TAG:-latest}
     container_name: homelab-memorial-api
@@ -486,6 +570,8 @@ volumes:
   zenvora-admin-sock: {}
   dayandyou-staging-sock: {}
   dayandyou-prod-sock: {}
+  # Day and You API staging's PHP-FPM sockets; see dayandyou-api-staging.
+  dayandyou-api-fpm-staging: {}
 
 networks:
   docker-proxy-net:

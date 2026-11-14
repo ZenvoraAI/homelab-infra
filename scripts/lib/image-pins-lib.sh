@@ -36,6 +36,8 @@ PINS_COMPOSE_MODE=transition
 # the public nginx image so there is no second image to trust.
 # securevault-api and securevault-scheduler share SECUREVAULT_API_TAG: one image,
 # FPM in the first, the schedule in the second; SecureVault's deploy moves both.
+# dayandyou-api-staging and dayandyou-api-scheduler-staging share
+# DAYANDYOU_API_STAGING_TAG the same way (the Day and You API's deploy).
 pins_table() {
   cat <<'TABLE'
 nginx|homelab-nginx|NGINX_IMAGE|image||nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
@@ -44,6 +46,8 @@ securevault-api|homelab-securevault-api|SECUREVAULT_API_TAG|tag|securevault-api-
 securevault-scheduler|homelab-securevault-scheduler|SECUREVAULT_API_TAG|tag|securevault-api-laravel|latest
 dayandyou-staging|homelab-dayandyou-staging|DAYANDYOU_STAGING_TAG|tag|dayandyou|staging
 dayandyou-prod|homelab-dayandyou-prod|DAYANDYOU_PROD_TAG|tag|dayandyou|release
+dayandyou-api-staging|homelab-dayandyou-api-staging|DAYANDYOU_API_STAGING_TAG|tag|dayandyou-api|staging
+dayandyou-api-scheduler-staging|homelab-dayandyou-api-scheduler-staging|DAYANDYOU_API_STAGING_TAG|tag|dayandyou-api|staging
 memorial-api|homelab-memorial-api|MEMORIAL_API_TAG|tag|aiqiuqi-memorial-api|latest
 memorial-worker|homelab-memorial-worker|MEMORIAL_WORKER_TAG|tag|aiqiuqi-memorial-worker|latest
 docker-socket-proxy|homelab-docker-socket-proxy|DOCKER_SOCKET_PROXY_IMAGE|image||tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459

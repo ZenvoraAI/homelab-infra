@@ -17,6 +17,8 @@ release workflows remain in their own repositories.
 | `securevault-scheduler` | `homelab-securevault-scheduler` | — | none (no listener) | 256m |
 | `dayandyou-prod` | `homelab-dayandyou-prod` | none (HTTP on a unix socket, `dayandyou-prod-sock` volume) | `dayandyou.com`, `www.dayandyou.com` | 400m |
 | `dayandyou-staging` | `homelab-dayandyou-staging` | none (HTTP on a unix socket, `dayandyou-staging-sock` volume) | `staging.dayandyou.com` | 350m |
+| `dayandyou-api-staging` | `homelab-dayandyou-api-staging` | none (FastCGI on unix sockets, `dayandyou-api-fpm-staging` volume) | `api-origin-staging.dayandyou.com` (CloudFront origin only) | 320m |
+| `dayandyou-api-scheduler-staging` | `homelab-dayandyou-api-scheduler-staging` | — | none (no listener) | 128m |
 | `memorial-api` | `homelab-memorial-api` | none (HTTP on a unix socket, `memorial-api-sock` volume) | `api.aiqiuqi.com` | 192m |
 | `memorial-worker` | `homelab-memorial-worker` | — | none (no listener) | 512m |
 | `docker-socket-proxy` | `homelab-docker-socket-proxy` | none (internal network only) | none | 16m |
@@ -50,8 +52,8 @@ public internet. Docker nginx is the only public reverse proxy.
 `memorial-worker` is the one service with no port and no vhost — it processes
 media out of band.
 
-Those limits sum to 2574 MiB on a host measured at 1.9 GiB, so the box is
-deliberately oversubscribed by roughly 32%. A `mem_limit` is a ceiling, not a
+Those limits sum to 3022 MiB on a host measured at 1.9 GiB, so the box is
+deliberately oversubscribed by roughly 55%. A `mem_limit` is a ceiling, not a
 reservation, and no service sits near its own ceiling — but the arithmetic means
 several services peaking together is an OOM, not a slowdown. Check
 `docker stats --no-stream` before raising any limit, and treat the total as the
@@ -91,10 +93,12 @@ oversubscribed OOM puts at risk.
 | securevault-scheduler | 256m | not measured | measure after the cutover |
 | dayandyou-prod | 400m | not measured | measure; Next.js `next start` baseline is typically 150-250 MB |
 | dayandyou-staging | 350m | not measured | first candidate for a cut (staging traffic); measure, then ~1.5x peak |
+| dayandyou-api-staging | 320m | not measured (main pool 2 + payments pool 1-2) | re-measure once the API's argon2 gate lands; the storefront's dayandyou-staging can shrink once the static site replaces it |
+| dayandyou-api-scheduler-staging | 128m | 93 MiB peak, measured locally | keep |
 | memorial-api | 192m | 171.9 MiB (89.5%) | keep or raise slightly; it is the one near its ceiling |
 | memorial-worker | 512m | not measured (raised for 50 MP photos, d864df6) | keep |
 | nginx / filter / proxy / zenvora-admin | 64m / 16m / 16m / 128m | small | keep |
-| **Total** | **2574 MiB** (2702 with the securevault branch) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
+| **Total** | **3022 MiB** (3150 with the securevault branch) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
 
 To gather the evidence (host, read-only, run over a normal week including a
 deploy and a photo upload):
@@ -152,6 +156,7 @@ is a one-line flip plus the compose lines, kept on its own branch
 | `SECUREVAULT_API_TAG` | `securevault-api`, `securevault-scheduler` | tag of `securevault-api-laravel` |
 | `DAYANDYOU_STAGING_TAG` | `dayandyou-staging` | tag of `dayandyou` |
 | `DAYANDYOU_PROD_TAG` | `dayandyou-prod` | tag of `dayandyou` |
+| `DAYANDYOU_API_STAGING_TAG` | `dayandyou-api-staging`, `dayandyou-api-scheduler-staging` | tag of `dayandyou-api` |
 | `MEMORIAL_API_TAG` | `memorial-api` | tag of `aiqiuqi-memorial-api` |
 | `MEMORIAL_WORKER_TAG` | `memorial-worker` | tag of `aiqiuqi-memorial-worker` |
 | `ZENVORA_ADMIN_TAG` | `zenvora-admin` | tag of `zenvora-admin` |
@@ -283,6 +288,7 @@ docker compose exec -T memorial-api node dist/probe.js /health/ready  # memorial
 docker compose exec -T zenvora-admin bun src/probe.ts  # zenvora-admin (unix socket; /healthz)
 docker compose exec -T dayandyou-prod node server/probe.mjs     # Day and You production (unix socket; /api/health)
 docker compose exec -T dayandyou-staging node server/probe.mjs  # Day and You staging (unix socket; /api/health)
+docker compose exec -T dayandyou-api-staging fcgi-probe.sh /api/health  # Day and You API staging (FastCGI only)
 ```
 
 Day and You switches to its sockets only once both services run an image with
@@ -354,6 +360,9 @@ file on disk breaks nothing. Validate, then recreate.
   hand-edit either one — see `scripts/` below.
 - SecureVault and Day and You receive runtime variables from their deployment
   workflows; do not add their values to this repository.
+- The Day and You CloudFront origin secret lives in
+  `/opt/secrets/dayandyou/origin-secret-staging.map` (see "Day and You API
+  origin"), mounted read-only into nginx only.
 - PostgreSQL runs natively on Lightsail. Its backup, archival, and restore
   tooling lives in the private `aws-infrastructure` repository, not here, and
   it is not a Compose service.
@@ -410,6 +419,8 @@ bash tests/verify-nginx-image-branch.sh      # nginx fallback is a digest-pinned
 bash tests/verify-nginx-default-server.sh    # unknown Host/SNI: 444 / handshake rejected, never the admin vhost
 bash tests/verify-container-hardening.sh     # no-new-privileges / cap_drop / read_only where verified
 bash tests/verify-securevault-api-env.sh     # securevault-api receives the extension sign-in vars
+bash tests/verify-securevault-fpm-socket.sh  # FastCGI only over unix sockets; only the API and nginx mount them
+bash tests/verify-dayandyou-api-origin.sh    # api-origin-staging: secret/viewer gate, viewer-keyed throttles, include
 ```
 
 `verify-container-log-limits.sh` asserts per service rather than grepping for
@@ -485,6 +496,65 @@ The list response still carries each container's name, image, state, labels,
 mounts and command line -- not env or files. Nothing here passes secrets on a
 command line.
 
+## Day and You API origin
+
+The Day and You storefront becomes a static site on S3 + CloudFront; CloudFront
+sends `/api/*` to `api-origin-staging.dayandyou.com` (Cloudflare proxied), which
+`nginx/conf.d/dayandyou-api-origin.conf` serves from `dayandyou-api-staging`'s
+PHP-FPM sockets. Browsers never use that name. Staging only for now; the
+existing `dayandyou.conf` vhosts are unchanged and stay as the rollback path.
+Runbook: private `aws-infrastructure` repo, `docs/dayandyou-static-frontend.md`.
+
+**Trust chain.** The firewall admits only Cloudflare, and
+`00-cloudflare-realip.conf` turns `$remote_addr` into the CloudFront edge that
+called -- shared by many customers, so useless as a client key. CloudFront adds
+a secret header, `X-Dayandyou-Origin-Secret`; only a request carrying it is
+believed about `CloudFront-Viewer-Address` (set by CloudFront, not the viewer).
+The 443 block returns 403 at server level, before any location, when either is
+missing, so such a request never reaches PHP. PHP gets the viewer only as
+`DAY_CLIENT_IP` (`nginx/dayandyou/fastcgi-dayandyou-api-cloudfront.conf`), never
+the secret, the raw viewer header or a forwarding header, and every throttle
+there (`dayandyou_cf_*`, `00-dayandyou-cloudfront.conf`) is keyed on the viewer.
+`tests/verify-dayandyou-api-origin.sh` pins all of it.
+
+**The secret file.** `/opt/secrets/dayandyou/origin-secret-staging.map`, root
+`0600` in a root `0700` directory mounted read-only into nginx only, one line:
+`"<48 hex chars>" 1;` (`openssl rand -hex 24`; hex only -- a key starting with
+`~` would be a regex). nginx includes it at http level, so **a missing file
+stops nginx from starting**; a prod map is added with the prod vhost, not
+before. A 48-character key needs `map_hash_bucket_size 128` (nginx.conf). The
+same value goes into the distribution's origin custom header (aws-infrastructure).
+To rotate: add the new value as a second line, `docker compose exec -T nginx
+nginx -s reload`, switch CloudFront's header and wait for its deploy, then delete
+the old line and reload again.
+
+**Certificate first.** nginx refuses a config naming a missing certificate, so
+this went in two commits: the port-80 ACME vhost alone, then the 443 block and
+everything above. Apply in that order, each validated before it goes live:
+
+```bash
+cd /opt/homelab-infra
+# 1. Port-80 vhost (conf.d only: a reload is enough). Needs the proxied A record.
+git pull --ff-only                                   # the ACME-only commit
+docker compose run --rm --no-deps nginx nginx -t
+docker compose exec -T nginx nginx -s reload
+echo ok | sudo tee /var/lib/homelab-acme/.well-known/acme-challenge/probe >/dev/null
+curl -s -H 'Host: api-origin-staging.dayandyou.com' http://127.0.0.1/.well-known/acme-challenge/probe   # ok
+sudo rm /var/lib/homelab-acme/.well-known/acme-challenge/probe
+sudo certbot certonly --webroot -w /var/lib/homelab-acme -d api-origin-staging.dayandyou.com
+# 2. This change: new nginx mounts and a changed nginx.conf, so recreate, not reload.
+#    Pull and recreate in one sitting: until then a restart of the old container
+#    would fail on the new conf.d (secret dir not mounted), taking every site down.
+sudo test -s /opt/secrets/dayandyou/origin-secret-staging.map && echo secret present
+git pull --ff-only
+docker compose run --rm --no-deps nginx nginx -t     # fresh container: the new mounts and files
+docker compose up -d --no-deps --force-recreate nginx   # brief outage for every site
+curl -s -o /dev/null -w '%{http_code}\n' https://api-origin-staging.dayandyou.com/api/health   # 403
+```
+
+Until the API's first deploy, a request with the secret and a viewer address
+gets `503 {"error":"Service unavailable"}` (no FPM socket yet).
+
 ## Container hardening
 
 Applied only where the product's Dockerfile and runtime code (origin/main,
@@ -495,6 +565,7 @@ Applied only where the product's Dockerfile and runtime code (origin/main,
 | api (family-media) | yes | yes | no | `USER node`, CMD `node`. Writes local storage (`lib/storage/local.ts`) and `os.tmpdir()` (video posters); which paths are live in prod is in the host env file, not verifiable here |
 | securevault-api, securevault-scheduler | yes | yes | no | `USER www-data`. Not verified on a read-only root: the deploy runs artisan one-offs (preflight, migrate) in this service's config, and Laravel writes `storage/` and `bootstrap/cache` |
 | dayandyou-staging/prod | yes | yes | no | `USER node`, `next start` writes `.next` at runtime (image cache, ISR) |
+| dayandyou-api-staging, dayandyou-api-scheduler-staging | yes | yes | no | `USER www-data` (day-and-you-api Dockerfile), as securevault-api. Laravel writes `storage/` and `bootstrap/cache`; a read-only root with tmpfs is not verified yet |
 | memorial-api | yes | yes | **yes**, `/tmp` tmpfs 16m | `USER node`; `apps/api/src` only reads files; migrations run outside the container; Prisma 7 has no engine binary |
 | memorial-worker | yes | yes | no | `USER node`; ffmpeg/HEIF processing of 50 MP photos needs scratch space too large for a RAM tmpfs |
 | zenvora-admin | yes | yes | no | `USER bun`; writes only `/app/data` (volume), but Bun's runtime cache behaviour on a read-only root was not verified |

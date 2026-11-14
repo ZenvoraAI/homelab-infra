@@ -9,7 +9,9 @@ set -euo pipefail
 # LISTEN_SOCKET pointing into it) and nginx (ro) may mount it, and its vhost
 # proxies only to the socket. The generic escapes (volumes_from, pid: host,
 # privileged, binds of /run or /var/lib/docker) are refused for every service
-# by verify-securevault-fpm-socket.sh.
+# by verify-securevault-fpm-socket.sh. The PHP-FPM apps (FastCGI, socket path
+# fixed by their image, no LISTEN_SOCKET) have their own tests:
+# verify-securevault-fpm-socket.sh and verify-dayandyou-api-origin.sh.
 #
 # Pure repo test: reads only docker-compose.yml and the nginx config.
 
