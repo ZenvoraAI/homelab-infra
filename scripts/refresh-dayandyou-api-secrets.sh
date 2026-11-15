@@ -48,6 +48,9 @@ REQUIRED_KEYS="DATABASE_URL DAYANDYOU_ROOT_SECRET APP_KEY APP_URL STRIPE_SECRET_
 # staging it serves ungated (the staging deploy stops the service if its probe
 # gets through without credentials).
 STAGING_ONLY_KEYS="SITE_PASSWORD"
+# Optional, staging only: the API sends every email to this address instead of its
+# recipient (the API also refuses it on dayandyou.com).
+STAGING_OPTIONAL_KEYS="MAIL_REDIRECT_TO"
 # Static-storefront rebuild after product edits (the scheduler sends the
 # debounced dispatch): the API enables it only with all four set.
 OPTIONAL_GROUP_KEYS="FRONTEND_REBUILD_TOKEN FRONTEND_REBUILD_REPO FRONTEND_REBUILD_WORKFLOW FRONTEND_REBUILD_REF"
@@ -78,7 +81,7 @@ PARAM_PREFIX="/dayandyou-api/$APP_ENV"
 PROFILE=${AWS_PROFILE:-dayandyou-api-ssm}
 
 KNOWN_KEYS="$REQUIRED_KEYS $OPTIONAL_GROUP_KEYS"
-[ "$APP_ENV" = staging ] && KNOWN_KEYS="$REQUIRED_KEYS $STAGING_ONLY_KEYS $OPTIONAL_GROUP_KEYS"
+[ "$APP_ENV" = staging ] && KNOWN_KEYS="$REQUIRED_KEYS $STAGING_ONLY_KEYS $STAGING_OPTIONAL_KEYS $OPTIONAL_GROUP_KEYS"
 
 NL='
 '
@@ -120,6 +123,9 @@ check_names() {
     is_in "$key" "$KNOWN_KEYS" || {
       if [ "$APP_ENV" = prod ] && is_in "$key" "$STAGING_ONLY_KEYS"; then
         die "$PARAM_PREFIX/$key must not exist on prod (a set SITE_PASSWORD turns on the staging gate)"
+      fi
+      if [ "$APP_ENV" = prod ] && is_in "$key" "$STAGING_OPTIONAL_KEYS"; then
+        die "$PARAM_PREFIX/$key must not exist on prod (customers would not get their email)"
       fi
       die "unknown parameter $PARAM_PREFIX/$key -- add it to this script or delete it from SSM"
     }
@@ -198,6 +204,13 @@ validate() {
   min_len AWS_SECRET_ACCESS_KEY "$MIN_AWS_SECRET_LEN"
   min_len AWS_SES_SECRET_ACCESS_KEY "$MIN_AWS_SECRET_LEN"
   [ "$APP_ENV" = staging ] && min_len SITE_PASSWORD "$MIN_SITE_PASSWORD_LEN"
+  if is_in MAIL_REDIRECT_TO "$1"; then
+    case "$(val MAIL_REDIRECT_TO)" in
+      *[[:space:],\;]*|*@*@*) die "MAIL_REDIRECT_TO must be one email address" ;;
+      ?*@?*.?*) ;;
+      *) die "MAIL_REDIRECT_TO must be one email address" ;;
+    esac
+  fi
   return 0
 }
 

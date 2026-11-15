@@ -267,6 +267,15 @@ done
 seed_old_file prod; set_valid_params prod; set_param FRONTEND_REBUILD_REPO 'zenvoraai/day-and-you'
 expect_refusal prod "a lone FRONTEND_REBUILD_REPO" 'all four or none in SSM, found 1'
 
+# 6b. MAIL_REDIRECT_TO: optional on staging (written through), refused on prod, must be an address.
+seed_old_file staging; set_valid_params staging; set_param MAIL_REDIRECT_TO 'owner@example.com'
+OUT="$(run_refresh staging)" || fail "staging with MAIL_REDIRECT_TO should be written, got:\n$OUT"
+grep -qxF "MAIL_REDIRECT_TO='owner@example.com'" "$SECRETS/staging.env" || fail "MAIL_REDIRECT_TO not written on staging"
+seed_old_file prod; set_valid_params prod; set_param MAIL_REDIRECT_TO 'owner@example.com'
+expect_refusal prod "MAIL_REDIRECT_TO on prod" 'must not exist on prod'
+seed_old_file staging; set_valid_params staging; set_param MAIL_REDIRECT_TO 'not-an-address'
+expect_refusal staging "a MAIL_REDIRECT_TO that is no address" 'MAIL_REDIRECT_TO must be one email address'
+
 # 7. AWS failures abort cleanly.
 seed_old_file staging; set_valid_params staging; touch "$LOGS/aws-fail-get-parameters-by-path"
 expect_refusal staging "a failed listing" 'could not list /dayandyou-api/staging/'
