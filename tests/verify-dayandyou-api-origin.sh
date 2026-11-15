@@ -92,9 +92,15 @@ limits="$(printf '%s\n' "$tls_block" | grep -E '^[[:space:]]*limit_(req|conn)[[:
 printf '%s\n' "$limits" | grep -vqE '^[[:space:]]*limit_(req[[:space:]]+zone=|conn[[:space:]]+)dayandyou_cf_[a-z_]+[[:space:]]' \
   && fail "every throttle in the 443 block must use a dayandyou_cf_* zone:\n$limits"
 zones="$(code "$HTTP_CONF" | grep -E '^[[:space:]]*limit_(req|conn)_zone' || true)"
-[ "$(printf '%s\n' "$zones" | grep -c 'zone=dayandyou_cf_')" = 4 ] || fail "expected four dayandyou_cf_* zones:\n$zones"
+[ "$(printf '%s\n' "$zones" | grep -c 'zone=dayandyou_cf_')" = 5 ] || fail "expected five dayandyou_cf_* zones:\n$zones"
 printf '%s\n' "$zones" | grep -vqE '^[[:space:]]*limit_(req|conn)_zone[[:space:]]+\$dayandyou_viewer_ip[[:space:]]' \
   && fail "the dayandyou_cf_* zones must be keyed on \$dayandyou_viewer_ip:\n$zones"
+
+# /api/health runs on the API's 2-worker payments pool: unthrottled, a probe flood would starve
+# Stripe webhook deliveries.
+health_exact="$(grep -E '^    location = /api/health \{' <<<"$locations" || true)"
+[ -n "$health_exact" ] || fail "missing 'location = /api/health'"
+[[ "$health_exact" == *'limit_req zone=dayandyou_cf_health '* ]] || fail "location = /api/health must be throttled by dayandyou_cf_health:\n$health_exact"
 
 # --- the FastCGI include --------------------------------------------------------
 inc="$(code "$INCLUDE")"
