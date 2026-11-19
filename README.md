@@ -18,7 +18,6 @@ release workflows remain in their own repositories.
 | `dayandyou-api-staging` | `homelab-dayandyou-api-staging` | none (FastCGI on unix sockets, `dayandyou-api-fpm-staging` volume) | `api-origin-staging.dayandyou.com` (CloudFront origin only) | 320m |
 | `dayandyou-api-scheduler-staging` | `homelab-dayandyou-api-scheduler-staging` | — | none (no listener) | 128m |
 | `memorial-api` | `homelab-memorial-api` | none (HTTP on a unix socket, `memorial-api-sock` volume) | `api.aiqiuqi.com` | 192m |
-| `memorial-worker` | `homelab-memorial-worker` | — | none (no listener) | 512m |
 | `docker-socket-proxy` | `homelab-docker-socket-proxy` | none (internal network only) | none | 16m |
 | `docker-api-filter` | `homelab-docker-api-filter` | none (private network only) | none | 16m |
 | `zenvora-admin` | `homelab-zenvora-admin` | none (HTTP on a unix socket, `zenvora-admin-sock` volume) | `admin.valtou.com` | 128m |
@@ -54,11 +53,9 @@ APIs. `zenvora-admin`'s `DOCKER_PROXY_URL` stays
 alias of `docker-api-filter`, not a
 loopback address. The application ports must remain firewalled from the
 public internet. Docker nginx is the only public reverse proxy.
-`memorial-worker` is the one service with no port and no vhost — it processes
-media out of band.
 
-Those limits sum to 3022 MiB on a host measured at 1.9 GiB, so the box is
-deliberately oversubscribed by roughly 55%. A `mem_limit` is a ceiling, not a
+Those limits sum to 2288 MiB on a host measured at 1.9 GiB, so the box is
+deliberately oversubscribed by roughly 15%. A `mem_limit` is a ceiling, not a
 reservation, and no service sits near its own ceiling — but the arithmetic means
 several services peaking together is an OOM, not a slowdown. Check
 `docker stats --no-stream` before raising any limit, and treat the total as the
@@ -99,9 +96,8 @@ oversubscribed OOM puts at risk.
 | dayandyou-api-staging | 320m | not measured (main pool 2 + payments pool 1-2) | re-measure once the API's argon2 gate lands |
 | dayandyou-api-scheduler-staging | 128m | 93 MiB peak, measured locally | keep |
 | memorial-api | 192m | 171.9 MiB (89.5%) | keep or raise slightly; it is the one near its ceiling |
-| memorial-worker | 512m | not measured (raised for 50 MP photos, d864df6) | keep |
 | nginx / filter / proxy / zenvora-admin | 64m / 16m / 16m / 128m | small | keep |
-| **Total** | **2800 MiB** (compose limits, 2026-11-15, after the Next.js storefront's 750 MiB left) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
+| **Total** | **2288 MiB** (compose limits, 2026-11-19, after the memorial worker's 512 MiB left) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
 
 To gather the evidence (host, read-only, run over a normal week including a
 deploy and a photo upload):
@@ -113,7 +109,7 @@ free -m; ps -o rss=,cmd= -C postgres | awk '{s+=$1} END {print s/1024 " MiB post
 ```
 
 Until then, an OOM-ordering safety net is worth considering (not applied):
-`oom_score_adj: 500` on memorial-worker and the staging API services, so the
+`oom_score_adj: 500` on the staging API services, so the
 kernel kills those before Postgres or a production API.
 
 ## Images and tags
@@ -159,7 +155,6 @@ To add a service, pin its variable on the host before merging.
 | `SECUREVAULT_API_TAG` | `securevault-api`, `securevault-scheduler` | tag of `securevault-api-laravel` |
 | `DAYANDYOU_API_STAGING_TAG` | `dayandyou-api-staging`, `dayandyou-api-scheduler-staging` | tag of `dayandyou-api` |
 | `MEMORIAL_API_TAG` | `memorial-api` | tag of `aiqiuqi-memorial-api` |
-| `MEMORIAL_WORKER_TAG` | `memorial-worker` | tag of `aiqiuqi-memorial-worker` |
 | `ZENVORA_ADMIN_TAG` | `zenvora-admin` | tag of `zenvora-admin` |
 
 A `*_TAG` value is a 40-hex commit SHA, optionally followed by
@@ -294,14 +289,6 @@ for target in 127.0.0.1:4000 127.0.0.1:3001 127.0.0.1:3100 "$ADMIN_IP:3100"; do
 done
 ```
 
-`memorial-worker` has no listener, so there is nothing to curl. Check it through
-Compose instead:
-
-```bash
-docker compose ps memorial-worker
-docker compose logs --tail=50 memorial-worker
-```
-
 Use `docker compose config` before applying a Compose or nginx configuration
 change. Check nginx syntax without replacing the running container:
 
@@ -342,9 +329,11 @@ file on disk breaks nothing. Validate, then recreate.
 - Family Media persists its API env only at
   `/opt/secrets/family-media/.env`; Compose mounts it read-only at `/app/.env`.
   It must be readable by the Compose user and mode `0600`.
-- The memorial services read `/opt/secrets/aiqiuqi-memorial/api.env` and
-  `/opt/secrets/aiqiuqi-memorial/worker.env` through `env_file`. Do not
-  hand-edit either one — see `scripts/` below.
+- The memorial API reads `/opt/secrets/aiqiuqi-memorial/api.env` through
+  `env_file`. Do not hand-edit it — see `scripts/` below. (The media worker and
+  its `worker.env` were retired on 2026-11-19 by aiqiuqi-memorial Part A; a
+  leftover `worker.env` and `MEMORIAL_WORKER_TAG` line in `.env` are unused and
+  may be deleted.)
 - The Day and You storefront is static (S3 + CloudFront) and has no runtime
   or secrets on this host.
 - SecureVault (`securevault-api` and its scheduler) reads everything from
@@ -655,7 +644,6 @@ Applied only where the product's Dockerfile and runtime code (origin/main,
 | securevault-api, securevault-scheduler | yes | yes | no | `USER www-data`. Not verified on a read-only root: the deploy runs artisan one-offs (preflight, migrate) in this service's config, and Laravel writes `storage/` and `bootstrap/cache` |
 | dayandyou-api-staging, dayandyou-api-scheduler-staging | yes | yes | no | `USER www-data` (day-and-you-api Dockerfile), as securevault-api. Laravel writes `storage/` and `bootstrap/cache`; a read-only root with tmpfs is not verified yet |
 | memorial-api | yes | yes | **yes**, `/tmp` tmpfs 16m | `USER node`; `apps/api/src` only reads files; migrations run outside the container; Prisma 7 has no engine binary |
-| memorial-worker | yes | yes | no | `USER node`; ffmpeg/HEIF processing of 50 MP photos needs scratch space too large for a RAM tmpfs |
 | zenvora-admin | yes | yes | no | `USER bun`; writes only `/app/data` (volume), but Bun's runtime cache behaviour on a read-only root was not verified |
 | nginx, docker-api-filter, docker-socket-proxy | yes | no | no | start as root (worker user switch, socket access); capability needs not verifiable without running the images |
 

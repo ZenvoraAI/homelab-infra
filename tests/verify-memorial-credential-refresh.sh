@@ -3,12 +3,11 @@ set -euo pipefail
 
 # Behavioural test for refresh-memorial-aws-credentials.sh.
 #
-# The script exists because both memorial containers ran with placeholder text
+# The script exists because the memorial containers ran with placeholder text
 # as their AWS_ACCESS_KEY_ID. So the property under test is not "it can write a
-# credential" -- it is "it refuses to write a bad one, and refuses before it has
-# written a good one somewhere else." A validator that runs per-file as it goes
-# would leave the API holding a fresh key and the worker holding a placeholder,
-# which is harder to notice than either file being wrong.
+# credential" -- it is "it refuses to write a bad one". Since aiqiuqi-memorial
+# Part A removed the media worker, only the API's credentials are managed; a
+# leftover worker.env on the host is left exactly as it is.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/scripts/refresh-memorial-aws-credentials.sh"
@@ -91,15 +90,15 @@ run_refresh() {
 value_of() { grep -E "^$2=" "$1" | head -1 | cut -d= -f2-; }
 
 # ---------------------------------------------------------------------------
-# 1. Valid credentials are written to both files
+# 1. Valid credentials are written to api.env; worker.env is left alone
 # ---------------------------------------------------------------------------
 write_env_files
 set_params "$VALID_KEY_A" "$VALID_SECRET" "$VALID_KEY_W" "$VALID_SECRET"
 OUT="$(run_refresh)" || fail "valid credentials should be written, got:\n$OUT"
 [ "$(value_of "$SECRETS/api.env" AWS_ACCESS_KEY_ID)" = "$VALID_KEY_A" ] \
   || fail "api.env did not receive its key"
-[ "$(value_of "$SECRETS/worker.env" AWS_ACCESS_KEY_ID)" = "$VALID_KEY_W" ] \
-  || fail "worker.env did not receive its key"
+[ "$(value_of "$SECRETS/worker.env" AWS_ACCESS_KEY_ID)" = "old-value" ] \
+  || fail "worker.env was modified, but the worker no longer exists"
 [ "$(value_of "$SECRETS/api.env" AWS_SECRET_ACCESS_KEY)" = "$VALID_SECRET" ] \
   || fail "api.env did not receive its secret"
 
@@ -141,22 +140,19 @@ fi
 grep -q '40-character' <<<"$OUT" || fail "expected a length complaint, got:\n$OUT"
 
 # ---------------------------------------------------------------------------
-# 6. A bad WORKER parameter leaves API untouched
+# 6. The retired WORKER parameters are no longer read
 #
-# The one that matters. Validating per-file as it goes would write the API's
-# fresh key, then fail on the worker -- leaving the two halves of the upload
-# pipeline on different credentials, which presents as uploads succeeding and
-# derived variants never appearing.
+# The media worker was removed (aiqiuqi-memorial Part A). Its SSM parameters may
+# still exist, possibly stale; they must neither block the API's refresh nor be
+# written anywhere.
 # ---------------------------------------------------------------------------
 write_env_files
 set_params "$VALID_KEY_A" "$VALID_SECRET" 'TODO-fill-me-in' "$VALID_SECRET"
-if OUT="$(run_refresh)"; then
-  fail "a bad worker parameter must abort the whole run, got:\n$OUT"
-fi
-[ "$(value_of "$SECRETS/api.env" AWS_ACCESS_KEY_ID)" = "old-value" ] \
-  || fail "api.env was modified even though the worker parameter was invalid"
-[ -z "$(ls "$SECRETS"/*.bak-* 2>/dev/null)" ] \
-  || fail "a backup was taken before validation completed"
+OUT="$(run_refresh)" || fail "a stale worker parameter must not block the API refresh, got:\n$OUT"
+[ "$(value_of "$SECRETS/api.env" AWS_ACCESS_KEY_ID)" = "$VALID_KEY_A" ] \
+  || fail "api.env did not receive its key"
+grep -q 'TODO-fill-me-in' "$SECRETS/worker.env" "$SECRETS/api.env" \
+  && fail "the retired worker parameter was written somewhere"
 
 # ---------------------------------------------------------------------------
 # 7. An empty or unreadable parameter is refused, not written as blank

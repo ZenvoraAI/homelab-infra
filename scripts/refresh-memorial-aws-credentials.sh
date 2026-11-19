@@ -1,10 +1,10 @@
 #!/bin/sh
 set -eu
 
-# Pulls the memorial API and worker AWS credentials out of SSM Parameter Store
-# and writes them into their env files. Never echoes the fetched values.
+# Pulls the memorial API's AWS credentials out of SSM Parameter Store and writes
+# them into its env file. Never echoes the fetched values.
 #
-# Why this exists: both containers ran for weeks with the literal placeholder
+# Why this exists: the memorial containers ran for weeks with the literal placeholder
 # text from the setup notes as their AWS_ACCESS_KEY_ID. Every media upload
 # failed, and nothing said so -- the admin UI had no upload entry point at the
 # time, so no one exercised the path. Hand-filled secrets are the failure mode;
@@ -13,15 +13,15 @@ set -eu
 # The validation below is the actual guard. Fetching from SSM only moves where
 # the value is typed; refusing to write a value that is not shaped like an AWS
 # key is what makes the placeholder impossible to install a second time. It runs
-# BEFORE anything is written, so a bad parameter leaves both env files untouched.
+# BEFORE anything is written, so a bad parameter leaves the env file untouched.
 #
-# The API and the worker deliberately use different IAM users -- qiuqi-api can
-# reach memorial/staging and memorial/originals, the worker memorial/originals
-# and memorial/derived -- so each has its own pair of parameters.
+# The media worker (and its worker.env / WORKER_* parameters) was removed by
+# aiqiuqi-memorial Part A; only the API's qiuqi-api IAM user remains. A leftover
+# worker.env on the host is deliberately not touched.
 #
 # Usage, on the host:
 #   sudo AWS_PROFILE=memorial-ssm ./refresh-memorial-aws-credentials.sh
-#   cd /opt/homelab-infra && sudo docker compose up -d --force-recreate memorial-api memorial-worker
+#   cd /opt/homelab-infra && sudo docker compose up -d --force-recreate memorial-api
 #
 # The recreate is not optional: docker compose reads env_file at container
 # creation, so an updated file changes nothing until the container is replaced.
@@ -33,7 +33,7 @@ PARAM_PREFIX=${PARAM_PREFIX:-/aiqiuqi-memorial/preview}
 PROFILE=${AWS_PROFILE:-memorial-ssm}
 
 # service:env-file:ssm-parameter-prefix
-TARGETS="api:${SECRETS_DIR}/api.env:API worker:${SECRETS_DIR}/worker.env:WORKER"
+TARGETS="api:${SECRETS_DIR}/api.env:API"
 
 fail() { echo "refresh-memorial-aws-credentials: $*" >&2; exit 1; }
 
@@ -134,5 +134,5 @@ for target in $TARGETS; do
 done
 
 echo
-echo "Recreate the containers -- an updated env_file does nothing until they are replaced:"
-echo "  cd /opt/homelab-infra && sudo docker compose up -d --force-recreate memorial-api memorial-worker"
+echo "Recreate the container -- an updated env_file does nothing until they are replaced:"
+echo "  cd /opt/homelab-infra && sudo docker compose up -d --force-recreate memorial-api"

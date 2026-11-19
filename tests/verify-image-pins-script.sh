@@ -150,7 +150,6 @@ seed_container homelab-securevault-api ghcr.io/zenvoraai/securevault-api-laravel
 seed_container homelab-dayandyou-api-staging "$REPO:staging" sha256:img-dyas "$REPO@$(dg 28)"
 seed_container homelab-dayandyou-api-scheduler-staging "$REPO:staging" sha256:img-dyas "$REPO@$(dg 28)"
 seed_container homelab-memorial-api ghcr.io/zenvoraai/aiqiuqi-memorial-api:latest sha256:img-ma "ghcr.io/zenvoraai/aiqiuqi-memorial-api@$(dg 25)"
-seed_container homelab-memorial-worker ghcr.io/zenvoraai/aiqiuqi-memorial-worker:latest sha256:img-mw "ghcr.io/zenvoraai/aiqiuqi-memorial-worker@$(dg 26)"
 # Running from the pre-transfer namespace: must not be pinned against zenvoraai.
 seed_container homelab-zenvora-admin ghcr.io/qclawchang/zenvora-admin:latest sha256:img-za "ghcr.io/qclawchang/zenvora-admin@$(dg 27)"
 

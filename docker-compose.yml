@@ -251,20 +251,6 @@ services:
     volumes:
       - memorial-api-sock:/run/memorial-api
     mem_limit: 192m
-  memorial-worker:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-worker:${MEMORIAL_WORKER_TAG:?MEMORIAL_WORKER_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
-    container_name: homelab-memorial-worker
-    network_mode: host
-    restart: unless-stopped
-    logging: *default-logging
-    security_opt:
-      - no-new-privileges:true
-    # Non-root image (USER node/bun); see README "Container hardening".
-    cap_drop:
-      - ALL
-    env_file:
-      - /opt/secrets/aiqiuqi-memorial/worker.env
-    mem_limit: 512m
   # CONTAINERS=1 permits the whole /containers/* GET surface in this proxy image
   # (list/inspect, but also logs/top/export/archive across all containers on
   # the host) -- there is no finer-grained flag in tecnativa/docker-socket-proxy.
@@ -389,7 +375,7 @@ services:
       docker-api-filter:
         condition: service_healthy
     # No environment: block at all — everything, including the non-secret
-    # PORT, lives in env_file, matching the memorial-api/memorial-worker
+    # PORT, lives in env_file, matching the memorial-api
     # pattern above. A bare `environment: - PORT` passthrough would resolve
     # from the shell/project .env at `docker compose up` time (not from this
     # service's own env_file) and, critically, Compose's environment: always
