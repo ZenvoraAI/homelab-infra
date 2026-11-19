@@ -104,8 +104,8 @@ ${PEM_END}" \
   "$VALID_PUBLIC_KEYS" "$VALID_AUDIENCE" "$VALID_WEB_ORIGIN" \
   "$VALID_FAMILY_ID" "$VALID_ALLOWED_ORIGIN" "$VALID_SHARED_USER"
 OUT="$(run_refresh)" || fail "valid handoff env should be written, got:\n$OUT"
-echo "$OUT" | grep -q 'updated.*CLOUDFRONT_MEDIA_KEY_PAIR_ID, CLOUDFRONT_MEDIA_PRIVATE_KEY, and 6 MEMORIAL_\* handoff vars' \
-  || fail "expected 6-vars-updated message, got:\n$OUT"
+echo "$OUT" | grep -q 'updated.*CLOUDFRONT_MEDIA_KEY_PAIR_ID, CLOUDFRONT_MEDIA_PRIVATE_KEY, and 7 MEMORIAL_\* handoff vars' \
+  || fail "expected 7-vars-updated message, got:\n$OUT"
 
 [ "$(value_of "$SECRETS/api.env" MEMORIAL_HANDOFF_PUBLIC_KEYS)" = "$VALID_PUBLIC_KEYS" ] \
   || fail "MEMORIAL_HANDOFF_PUBLIC_KEYS was not written"
@@ -119,6 +119,9 @@ echo "$OUT" | grep -q 'updated.*CLOUDFRONT_MEDIA_KEY_PAIR_ID, CLOUDFRONT_MEDIA_P
   || fail "MEMORIAL_HANDOFF_ALLOWED_ORIGIN was not written"
 [ "$(value_of "$SECRETS/api.env" MEMORIAL_SSO_SHARED_MEMBER_USERNAME)" = "$VALID_SHARED_USER" ] \
   || fail "MEMORIAL_SSO_SHARED_MEMBER_USERNAME was not written"
+# memorial (multi-memorial, B3) refuses to boot with handoff configured but no tenant named.
+[ "$(value_of "$SECRETS/api.env" MEMORIAL_HANDOFF_TENANT)" = "aiqiuqi" ] \
+  || fail "MEMORIAL_HANDOFF_TENANT was not written as aiqiuqi"
 
 # CloudFront vars still written (regression check: extending the script
 # must not have broken the original behaviour).
@@ -127,7 +130,8 @@ echo "$OUT" | grep -q 'updated.*CLOUDFRONT_MEDIA_KEY_PAIR_ID, CLOUDFRONT_MEDIA_P
 
 # Exactly one line per handoff var, not appended duplicates.
 for v in MEMORIAL_HANDOFF_PUBLIC_KEYS MEMORIAL_HANDOFF_AUDIENCE MEMORIAL_WEB_ORIGIN \
-         MEMORIAL_SSO_FAMILY_ID MEMORIAL_HANDOFF_ALLOWED_ORIGIN MEMORIAL_SSO_SHARED_MEMBER_USERNAME; do
+         MEMORIAL_SSO_FAMILY_ID MEMORIAL_HANDOFF_ALLOWED_ORIGIN MEMORIAL_SSO_SHARED_MEMBER_USERNAME \
+         MEMORIAL_HANDOFF_TENANT; do
   [ "$(grep -c "^$v=" "$SECRETS/api.env")" = 1 ] \
     || fail "api.env has duplicate $v lines"
 done
@@ -340,8 +344,8 @@ ${PEM_END}" \
   "$VALID_PUBLIC_KEYS" "$VALID_AUDIENCE" "$VALID_WEB_ORIGIN" \
   "$VALID_FAMILY_ID" "https://app.family.valtou.com" "$VALID_SHARED_USER"
 OUT="$(run_refresh)" || fail "bare-origin allowed origin should succeed, got:\n$OUT"
-echo "$OUT" | grep -q 'updated.*6 MEMORIAL_\* handoff vars' \
-  || fail "expected 6-vars-updated message, got:\n$OUT"
+echo "$OUT" | grep -q 'updated.*7 MEMORIAL_\* handoff vars' \
+  || fail "expected 7-vars-updated message, got:\n$OUT"
 
 write_env_files
 set_params "$VALID_KEY_ID" "${PEM_MARKER}
@@ -350,7 +354,7 @@ ${PEM_END}" \
   "$VALID_PUBLIC_KEYS" "$VALID_AUDIENCE" "$VALID_WEB_ORIGIN" \
   "$VALID_FAMILY_ID" "https://app.family.valtou.com/" "$VALID_SHARED_USER"
 OUT="$(run_refresh)" || fail "origin-with-slash allowed origin should succeed, got:\n$OUT"
-echo "$OUT" | grep -q 'updated.*6 MEMORIAL_\* handoff vars' \
-  || fail "expected 6-vars-updated message, got:\n$OUT"
+echo "$OUT" | grep -q 'updated.*7 MEMORIAL_\* handoff vars' \
+  || fail "expected 7-vars-updated message, got:\n$OUT"
 
 echo "PASS: memorial handoff env refresh (13 checks)"

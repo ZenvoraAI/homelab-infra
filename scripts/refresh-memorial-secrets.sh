@@ -25,6 +25,10 @@ set -eu
 SECRETS_DIR=${SECRETS_DIR:-/opt/secrets/aiqiuqi-memorial}
 ENV_FILE="$SECRETS_DIR/api.env"
 PARAM_PREFIX=/aiqiuqi-memorial/preview
+# Which memorial accepts the family-media handoff (memorial env.ts: required
+# whenever the handoff block is set). Handoff is aiqiuqi-only by design, so
+# this is a constant here rather than an SSM parameter.
+MEMORIAL_HANDOFF_TENANT=aiqiuqi
 PROFILE=${AWS_PROFILE:-memorial-ssm}
 
 test -f "$ENV_FILE" || { echo "refresh-memorial-secrets: $ENV_FILE not found" >&2; exit 1; }
@@ -196,6 +200,7 @@ awk '
   /^MEMORIAL_SSO_FAMILY_ID=/ { next }
   /^MEMORIAL_HANDOFF_ALLOWED_ORIGIN=/ { next }
   /^MEMORIAL_SSO_SHARED_MEMBER_USERNAME=/ { next }
+  /^MEMORIAL_HANDOFF_TENANT=/ { next }
   { print }
 ' "$ENV_FILE" > "$TMP"
 (
@@ -210,9 +215,10 @@ awk '
     printf 'MEMORIAL_SSO_FAMILY_ID=%s\n' "$MEMORIAL_SSO_FAMILY_ID"
     printf 'MEMORIAL_HANDOFF_ALLOWED_ORIGIN=%s\n' "$MEMORIAL_HANDOFF_ALLOWED_ORIGIN"
     printf 'MEMORIAL_SSO_SHARED_MEMBER_USERNAME=%s\n' "$MEMORIAL_SSO_SHARED_MEMBER_USERNAME"
+    printf 'MEMORIAL_HANDOFF_TENANT=%s\n' "$MEMORIAL_HANDOFF_TENANT"
   } > "$ENV_FILE.new"
 )
 rm -f "$TMP"
 secretlib_finalize "$ENV_FILE" "$ORIG_OWNER"
 
-echo "refresh-memorial-secrets: updated CLOUDFRONT_MEDIA_KEY_PAIR_ID, CLOUDFRONT_MEDIA_PRIVATE_KEY, and 6 MEMORIAL_* handoff vars in $ENV_FILE (backup: $BACKUP)"
+echo "refresh-memorial-secrets: updated CLOUDFRONT_MEDIA_KEY_PAIR_ID, CLOUDFRONT_MEDIA_PRIVATE_KEY, and 7 MEMORIAL_* handoff vars in $ENV_FILE (backup: $BACKUP)"
