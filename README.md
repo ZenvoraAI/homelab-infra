@@ -366,6 +366,7 @@ file on disk breaks nothing. Validate, then recreate.
 | `refresh-memorial-aws-credentials.sh` | Pulls the memorial API's AWS credentials from SSM Parameter Store into its env file (the media worker was retired). |
 | `refresh-securevault-secrets.sh` | Writes SecureVault's whole env file, `/opt/secrets/securevault/api.env`, from SSM `/securevault/prod/*` (profile `securevault-ssm`), deriving `ALLOWED_EXTENSION_ORIGINS` from `EXTENSION_IDS`. Refuses a missing required key, an unknown extra one, a partial `GOOGLE_*` set, `PHOTO_S3_*` without `OBJECT_STORE`, or a value of the wrong shape (secret lengths, WebAuthn RP ID and origins, URLs, SMTP port, extension ids, line breaks or single quotes). Written `KEY='value'`. Run by SecureVault's deploy on every backend deploy (`sudo -n`); creates the file on first run. |
 | `refresh-memorial-secrets.sh` | Pulls the CloudFront media signing key pair and the family-media handoff settings from SSM into the memorial API env file, and writes the constant `MEMORIAL_HANDOFF_TENANT=aiqiuqi`. |
+| `refresh-memorial-laravel-secrets.sh` | Writes the Laravel memorial API's `APP_KEY` (SSM `/aiqiuqi-memorial/preview/APP_KEY`) into the same api.env; refuses anything but `base64:` + 32 bytes. Run only by the Laravel deploy, so the Express deploys never depend on that parameter. |
 | `refresh-zenvora-admin-secrets.sh` | Pulls zenvora-admin's 14 secrets from SSM into its env file: GitHub App credentials, SES SMTP credentials, token-encryption key, whitelisted user ID, plus three tokens for external read-only APIs (a fine-grained GitHub alert-check PAT covering all ZenvoraAI-owned tracked repos, a classic PAT for GHCR package listing since neither GitHub Apps nor fine-grained PATs expose an org-level Packages permission, and a Cloudflare API token scoped to the three onboarded zones for the traffic/security-events panel). Same pattern as the memorial scripts, for the same reason. |
 | `reload-nginx-after-cert-renewal.sh` | Certbot deploy hook; reloads the `nginx` container after a renewal. |
 
@@ -396,6 +397,7 @@ bash tests/verify-container-log-limits.sh    # every service bounds its log
 bash tests/verify-email-rate-limits.sh       # nginx limits + TRUST_PROXY reaches the container
 bash tests/verify-certbot-webroot.sh         # the webroot renewal path is intact
 bash tests/verify-memorial-credential-refresh.sh  # the refresh script refuses a bad value
+bash tests/verify-memorial-laravel-secret-refresh.sh  # only a 32-byte APP_KEY is written, nothing echoed
 bash tests/verify-zenvora-admin-secret-refresh.sh  # rotation accepts short non-secrets, still refuses short secrets
 bash tests/verify-dayandyou-api-secret-refresh.sh  # exact KEY='value' file, every shape rule refuses, no value echoed
 bash tests/verify-securevault-secret-refresh.sh  # same for SecureVault, plus derived extension origins
