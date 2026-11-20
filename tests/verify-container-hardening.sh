@@ -15,6 +15,10 @@ set -euo pipefail
 #   - memorial-api: read_only root filesystem plus a small /tmp tmpfs -- its
 #     runtime code reads files only and its migrations run outside the
 #     container.
+#   - memorial-api-laravel and its scheduler (USER www-data): the same, run
+#     exactly so by ZenvoraAI/memorial-api scripts/docker-smoke.sh ("root
+#     filesystem is read-only"); FPM writes only its sockets (a volume) and
+#     /tmp, migrations run as a one-off container before the swap.
 # nginx, docker-api-filter and docker-socket-proxy start as root and keep
 # their default capabilities: not verifiable without running those images.
 
@@ -26,8 +30,8 @@ COMPOSE="$COMPOSE" ruby -ryaml -e '
   doc = YAML.load(File.read(ENV.fetch("COMPOSE")))  # system ruby 2.6: aliases allowed by default
   services = doc.fetch("services")
   errors = []
-  non_root_apps = %w[api securevault-api securevault-scheduler dayandyou-api-staging dayandyou-api-scheduler-staging memorial-api zenvora-admin]
-  read_only = { "memorial-api" => "/tmp" }
+  non_root_apps = %w[api securevault-api securevault-scheduler dayandyou-api-staging dayandyou-api-scheduler-staging memorial-api memorial-api-laravel memorial-api-laravel-scheduler zenvora-admin]
+  read_only = { "memorial-api" => "/tmp", "memorial-api-laravel" => "/tmp", "memorial-api-laravel-scheduler" => "/tmp" }
 
   errors << "parsed only #{services.size} services" if services.size < 10
   services.each do |name, svc|

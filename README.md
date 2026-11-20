@@ -18,6 +18,8 @@ release workflows remain in their own repositories.
 | `dayandyou-api-staging` | `homelab-dayandyou-api-staging` | none (FastCGI on unix sockets, `dayandyou-api-fpm-staging` volume) | `api-origin-staging.dayandyou.com` (CloudFront origin only) | 320m |
 | `dayandyou-api-scheduler-staging` | `homelab-dayandyou-api-scheduler-staging` | — | none (no listener) | 128m |
 | `memorial-api` | `homelab-memorial-api` | none (HTTP on a unix socket, `memorial-api-sock` volume) | `api.aiqiuqi.com` | 192m |
+| `memorial-api-laravel` | `homelab-memorial-api-laravel` | none (FastCGI on unix sockets, `memorial-api-fpm` volume) | none until the nginx switch (then `api.aiqiuqi.com`; see "Memorial API on Laravel") | 256m |
+| `memorial-api-laravel-scheduler` | `homelab-memorial-api-laravel-scheduler` | — | none (no listener) | 96m |
 | `docker-socket-proxy` | `homelab-docker-socket-proxy` | none (internal network only) | none | 16m |
 | `docker-api-filter` | `homelab-docker-api-filter` | none (private network only) | none | 16m |
 | `zenvora-admin` | `homelab-zenvora-admin` | none (HTTP on a unix socket, `zenvora-admin-sock` volume) | `admin.valtou.com` | 128m |
@@ -155,6 +157,7 @@ To add a service, pin its variable on the host before merging.
 | `SECUREVAULT_API_TAG` | `securevault-api`, `securevault-scheduler` | tag of `securevault-api-laravel` |
 | `DAYANDYOU_API_STAGING_TAG` | `dayandyou-api-staging`, `dayandyou-api-scheduler-staging` | tag of `dayandyou-api` |
 | `MEMORIAL_API_TAG` | `memorial-api` | tag of `aiqiuqi-memorial-api` |
+| `MEMORIAL_API_LARAVEL_TAG` | `memorial-api-laravel`, `memorial-api-laravel-scheduler` | tag of `memorial-api` |
 | `ZENVORA_ADMIN_TAG` | `zenvora-admin` | tag of `zenvora-admin` |
 
 A `*_TAG` value is a 40-hex commit SHA, optionally followed by
@@ -367,6 +370,8 @@ file on disk breaks nothing. Validate, then recreate.
 | `refresh-securevault-secrets.sh` | Writes SecureVault's whole env file, `/opt/secrets/securevault/api.env`, from SSM `/securevault/prod/*` (profile `securevault-ssm`), deriving `ALLOWED_EXTENSION_ORIGINS` from `EXTENSION_IDS`. Refuses a missing required key, an unknown extra one, a partial `GOOGLE_*` set, `PHOTO_S3_*` without `OBJECT_STORE`, or a value of the wrong shape (secret lengths, WebAuthn RP ID and origins, URLs, SMTP port, extension ids, line breaks or single quotes). Written `KEY='value'`. Run by SecureVault's deploy on every backend deploy (`sudo -n`); creates the file on first run. |
 | `refresh-memorial-secrets.sh` | Pulls the CloudFront media signing key pair and the family-media handoff settings from SSM into the memorial API env file, and writes the constant `MEMORIAL_HANDOFF_TENANT=aiqiuqi`. |
 | `refresh-memorial-laravel-secrets.sh` | Writes the Laravel memorial API's `APP_KEY` (SSM `/aiqiuqi-memorial/preview/APP_KEY`) into the same api.env; refuses anything but `base64:` + 32 bytes. Run only by the Laravel deploy, so the Express deploys never depend on that parameter. |
+| `memorial-deploy-gate.sh` | The forced command of the memorial-api deploy key, installed as `/usr/local/sbin/memorial-deploy-gate` (see "Memorial API on Laravel"). Allows only `deploy-memorial-api-laravel <release sha> <homelab sha>`, and only when the homelab sha is origin/main's tip; fast-forwards to it and hands over to the next script. |
+| `deploy-memorial-api-laravel.sh` | The Laravel memorial deploy on the host: secrets, env-file shape, pull, preflight, pre-migration dump, migration, swap of both services, readiness of both FPM pools, pin, prune. Rolls an unready release back to the previous one. |
 | `refresh-zenvora-admin-secrets.sh` | Pulls zenvora-admin's 14 secrets from SSM into its env file: GitHub App credentials, SES SMTP credentials, token-encryption key, whitelisted user ID, plus three tokens for external read-only APIs (a fine-grained GitHub alert-check PAT covering all ZenvoraAI-owned tracked repos, a classic PAT for GHCR package listing since neither GitHub Apps nor fine-grained PATs expose an org-level Packages permission, and a Cloudflare API token scoped to the three onboarded zones for the traffic/security-events panel). Same pattern as the memorial scripts, for the same reason. |
 | `reload-nginx-after-cert-renewal.sh` | Certbot deploy hook; reloads the `nginx` container after a renewal. |
 
@@ -398,6 +403,9 @@ bash tests/verify-email-rate-limits.sh       # nginx limits + TRUST_PROXY reache
 bash tests/verify-certbot-webroot.sh         # the webroot renewal path is intact
 bash tests/verify-memorial-credential-refresh.sh  # the refresh script refuses a bad value
 bash tests/verify-memorial-laravel-secret-refresh.sh  # only a 32-byte APP_KEY is written, nothing echoed
+bash tests/verify-memorial-api-laravel.sh    # Laravel memorial FPM only over its socket volume; client IP only from $remote_addr
+bash tests/verify-memorial-laravel-deploy.sh  # nothing swapped before preflight+dump+migrate; unready release rolled back, never pinned
+bash tests/verify-memorial-deploy-gate.sh    # the deploy key runs one command, from the approved homelab main tip only
 bash tests/verify-zenvora-admin-secret-refresh.sh  # rotation accepts short non-secrets, still refuses short secrets
 bash tests/verify-dayandyou-api-secret-refresh.sh  # exact KEY='value' file, every shape rule refuses, no value echoed
 bash tests/verify-securevault-secret-refresh.sh  # same for SecureVault, plus derived extension origins
@@ -634,6 +642,70 @@ securevault-scheduler`). The one previous file is kept as
 `api.env.bak-<timestamp>`. Never change `WEBAUTHN_RP_ID` or `JWT_SECRET` by
 accident: the first kills every registered passkey, the second signs every
 user out.
+
+## Memorial API on Laravel
+
+`memorial-api-laravel` (PHP-FPM) and `memorial-api-laravel-scheduler` run the
+memorial API ported to Laravel (ZenvoraAI/memorial-api) next to the Express
+`memorial-api`. Both read the same `api.env`, the same database and accept the
+same sessions, so nginx can be switched between them in either direction; the
+plan, and the order of every step, is memorial-api
+`docs/laravel-migration/phase-4-plan.md`. Until the switch, nginx sends nothing
+to them.
+
+**Deploys** come only from memorial-api's `deploy.yml`, through a deploy key
+that can do one thing. CI holds no database URL and opens no tunnel; the
+pre-migration dump (`sudo -u postgres pg_dump`) and `php artisan migrate` run
+here, in `scripts/deploy-memorial-api-laravel.sh`.
+
+The key's `authorized_keys` line for `ubuntu` (the user installs it; the
+public key is the one whose private half is memorial-api's
+`MEMORIAL_DEPLOY_SSH_KEY` secret):
+
+```
+restrict,command="/usr/local/sbin/memorial-deploy-gate" ssh-ed25519 AAAA… memorial-api-deploy
+```
+
+and the gate itself, from a reviewed commit of this repository:
+
+```bash
+sudo install -o root -g root -m 0755 scripts/memorial-deploy-gate.sh /usr/local/sbin/memorial-deploy-gate
+```
+
+`restrict` turns off port forwarding, the pty and agent/X11 forwarding; the
+gate refuses every command but `deploy-memorial-api-laravel <release sha>
+<homelab sha>`, and runs it only when `<homelab sha>` is the tip of this
+repository's `main` (the commit the GitHub `production` environment's reviewer
+approved), after a fast-forward to it. Re-install the gate whenever
+`scripts/memorial-deploy-gate.sh` changes; the copy in the checkout is never
+run.
+
+GitHub settings this relies on (the user sets them): memorial-api's
+`production` environment requires a reviewer and allows only `main`; this
+repository's `main` is protected (pull requests only, no force push).
+
+**First deploy.** `MEMORIAL_API_LARAVEL_TAG` must be pinned before the commit
+that adds these services reaches `main` (strict pins: an unset variable stops
+every compose command, for every product). From a temporary worktree of the
+reviewed branch commit, with the first release `<S>` already built:
+
+```bash
+cd /opt/homelab-infra
+docker pull ghcr.io/zenvoraai/memorial-api:<S>
+git fetch origin <branch> && git worktree add --detach /tmp/homelab-pin <branch sha>
+IMAGE_PINS_ENV_FILE=/opt/homelab-infra/.env IMAGE_PINS_STATE_DIR=/opt/homelab-infra/.image-pins \
+  /tmp/homelab-pin/scripts/image-pins.sh promote memorial-api-laravel <S>
+git worktree remove /tmp/homelab-pin
+```
+
+Then merge, then dispatch the deploy with `<S>` and the new `main` sha. A first
+deploy that fails readiness stops both services (no previous release to return
+to); nginx does not depend on them yet.
+
+**nginx** mounts `memorial-api-fpm` and `nginx/memorial/` read-only. A running
+nginx sees neither until it is recreated (`docker compose up -d --no-deps
+nginx`, a second of downtime for every site), which is due before the switch,
+not before the first deploy.
 
 ## Container hardening
 

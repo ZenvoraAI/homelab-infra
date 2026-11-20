@@ -49,6 +49,9 @@ services:
       - securevault-fpm:/run/securevault-fpm:ro
       - family-api-sock:/run/family-api:ro
       - memorial-api-sock:/run/memorial-api:ro
+      # The Laravel memorial API's FPM sockets and its FastCGI include.
+      - memorial-api-fpm:/run/memorial-api-fpm:ro
+      - ./nginx/memorial:/etc/nginx/memorial:ro
       - zenvora-admin-sock:/run/zenvora-admin:ro
       # The Day and You API origin behind CloudFront (README "Day and You API
       # origin"): the FPM socket, the FastCGI include, and the origin-secret
@@ -251,6 +254,74 @@ services:
     volumes:
       - memorial-api-sock:/run/memorial-api
     mem_limit: 192m
+  # The memorial API ported to Laravel (ZenvoraAI/memorial-api), running next
+  # to the Express memorial-api above until nginx is switched to it (memorial-api
+  # docs/laravel-migration/phase-4-plan.md). Same database, same sessions, so
+  # nginx can move between the two in either direction. Deployed only by
+  # scripts/deploy-memorial-api-laravel.sh (MEMORIAL_API_LARAVEL_TAG; the
+  # scheduler shares the pin).
+  memorial-api-laravel:
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/memorial-api:${MEMORIAL_API_LARAVEL_TAG:?MEMORIAL_API_LARAVEL_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
+    container_name: homelab-memorial-api-laravel
+    # Postgres listens on the host, as for the Express service.
+    network_mode: host
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # Non-root image (USER www-data); see README "Container hardening".
+    cap_drop:
+      - ALL
+    # Runtime code writes nothing but FPM's sockets (the volume) and /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    # The file the Express service reads (DATABASE_URL, the JWT secret, the
+    # CloudFront and handoff blocks) plus APP_KEY, which
+    # scripts/refresh-memorial-laravel-secrets.sh writes into it.
+    env_file: &memorial-api-laravel-env-file
+      - /opt/secrets/aiqiuqi-memorial/api.env
+    # Literals only. api.env may still carry Express's TRUSTED_PROXY_ADDRESSES
+    # (loopback, from before the unix socket); the Laravel API trusts no proxy
+    # header at all -- the client IP comes only from nginx's MEMORIAL_CLIENT_IP
+    # FastCGI parameter -- and refuses to boot when either name is set. A
+    # literal empty value here wins over env_file.
+    environment: &memorial-api-laravel-env
+      - TRUSTED_PROXY_ADDRESSES=
+      - TRUSTED_PROXIES=
+    # FastCGI has no authentication and loopback is shared by every
+    # host-network service, so FPM listens only on unix sockets (fpm.sock, and
+    # fpm-auth.sock for the argon2 routes) in this volume. Only this service and
+    # nginx (read-only) mount it (tests/verify-memorial-api-laravel.sh).
+    volumes:
+      - memorial-api-fpm:/run/memorial-api-fpm
+    # Two pools: main 2 workers, auth 1 (argon2id at 64 MiB). Smoke-tested
+    # under this limit (memorial-api scripts/docker-smoke.sh); re-measure with
+    # docker stats before the nginx switch.
+    mem_limit: 256m
+  # Same image and environment; runs Laravel's schedule (the expired handoff
+  # replay sweep, which the Express service's in-process timer also does --
+  # twice is harmless) instead of FPM, so it mounts no socket volume. The
+  # image's HEALTHCHECK pings FPM, which does not run here.
+  memorial-api-laravel-scheduler:
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/memorial-api:${MEMORIAL_API_LARAVEL_TAG:?MEMORIAL_API_LARAVEL_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
+    container_name: homelab-memorial-api-laravel-scheduler
+    network_mode: host
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    entrypoint: ["memorial-scheduler-entrypoint"]
+    env_file: *memorial-api-laravel-env-file
+    environment: *memorial-api-laravel-env
+    healthcheck:
+      disable: true
+    mem_limit: 96m
   # CONTAINERS=1 permits the whole /containers/* GET surface in this proxy image
   # (list/inspect, but also logs/top/export/archive across all containers on
   # the host) -- there is no finer-grained flag in tecnativa/docker-socket-proxy.
@@ -412,6 +483,8 @@ volumes:
   family-api-sock: {}
   memorial-api-sock: {}
   zenvora-admin-sock: {}
+  # The Laravel memorial API's PHP-FPM sockets; see memorial-api-laravel.
+  memorial-api-fpm: {}
   # Day and You API staging's PHP-FPM sockets; see dayandyou-api-staging.
   dayandyou-api-fpm-staging: {}
 

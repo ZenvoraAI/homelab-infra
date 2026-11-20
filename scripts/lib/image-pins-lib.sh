@@ -38,6 +38,8 @@ PINS_COMPOSE_MODE=strict
 # FPM in the first, the schedule in the second; SecureVault's deploy moves both.
 # dayandyou-api-staging and dayandyou-api-scheduler-staging share
 # DAYANDYOU_API_STAGING_TAG the same way (the Day and You API's deploy).
+# memorial-api-laravel and memorial-api-laravel-scheduler share
+# MEMORIAL_API_LARAVEL_TAG the same way (scripts/deploy-memorial-api-laravel.sh).
 pins_table() {
   cat <<'TABLE'
 nginx|homelab-nginx|NGINX_IMAGE|image||nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
@@ -47,6 +49,8 @@ securevault-scheduler|homelab-securevault-scheduler|SECUREVAULT_API_TAG|tag|secu
 dayandyou-api-staging|homelab-dayandyou-api-staging|DAYANDYOU_API_STAGING_TAG|tag|dayandyou-api|staging
 dayandyou-api-scheduler-staging|homelab-dayandyou-api-scheduler-staging|DAYANDYOU_API_STAGING_TAG|tag|dayandyou-api|staging
 memorial-api|homelab-memorial-api|MEMORIAL_API_TAG|tag|aiqiuqi-memorial-api|latest
+memorial-api-laravel|homelab-memorial-api-laravel|MEMORIAL_API_LARAVEL_TAG|tag|memorial-api|latest
+memorial-api-laravel-scheduler|homelab-memorial-api-laravel-scheduler|MEMORIAL_API_LARAVEL_TAG|tag|memorial-api|latest
 docker-socket-proxy|homelab-docker-socket-proxy|DOCKER_SOCKET_PROXY_IMAGE|image||tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
 docker-api-filter|homelab-docker-api-filter|NGINX_IMAGE|image||nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
 zenvora-admin|homelab-zenvora-admin|ZENVORA_ADMIN_TAG|tag|zenvora-admin|latest
