@@ -24,7 +24,7 @@ NGINX_DIR="$NGINX_ROOT/conf.d"
 
 # service volume socket-dir vhost old-port
 APPS="api family-api-sock /run/family-api family-api.conf 4000
-memorial-api memorial-api-sock /run/memorial-api api.aiqiuqi.com.conf 3001
+memorial-api memorial-api-sock /run/memorial-api - 3001
 zenvora-admin zenvora-admin-sock /run/zenvora-admin admin.valtou.com.conf 3100"
 
 fail() { printf 'FAIL: %b\n' "$*" >&2; exit 1; }
@@ -49,16 +49,21 @@ nginx - $volume:$dir:ro
   grep -q "^  $volume: {}\$" "$COMPOSE" || fail "top-level volumes: must declare $volume"
 
   conf="$NGINX_DIR/$vhost"
-  proxies="$(sed -e 's/[[:space:]]*#.*$//' "$conf" | grep -oE 'proxy_pass[[:space:]]+[^;]+;' || true)"
-  [ -n "$proxies" ] || fail "$vhost has no proxy_pass"
-  # A vhost may serve several apps; each of
-  # its proxy_passes must go to the socket of one of them, and this app's
-  # socket must be among them.
-  vhost_sockets="$(printf '%s\n' "$APPS" | awk -v v="$vhost" '$4 == v { printf "%s%s", sep, $3; sep = "|" }')"
-  printf '%s\n' "$proxies" | grep -vqxE "proxy_pass[[:space:]]+http://unix:($vhost_sockets)/http\\.sock:;" \
-    && fail "$vhost proxies somewhere other than its apps' sockets ($vhost_sockets):\n$proxies"
-  printf '%s\n' "$proxies" | grep -qxE "proxy_pass[[:space:]]+http://unix:$dir/http\\.sock:;" \
-    || fail "$vhost never proxies to $service's socket unix:$dir/http.sock:"
+  # "-": the app runs but no vhost proxies to it any more (the Express memorial
+  # API after the switch to Laravel, until it is retired); its socket rules
+  # still hold.
+  if [ "$vhost" != - ]; then
+    proxies="$(sed -e 's/[[:space:]]*#.*$//' "$conf" | grep -oE 'proxy_pass[[:space:]]+[^;]+;' || true)"
+    [ -n "$proxies" ] || fail "$vhost has no proxy_pass"
+    # A vhost may serve several apps; each of
+    # its proxy_passes must go to the socket of one of them, and this app's
+    # socket must be among them.
+    vhost_sockets="$(printf '%s\n' "$APPS" | awk -v v="$vhost" '$4 == v { printf "%s%s", sep, $3; sep = "|" }')"
+    printf '%s\n' "$proxies" | grep -vqxE "proxy_pass[[:space:]]+http://unix:($vhost_sockets)/http\\.sock:;" \
+      && fail "$vhost proxies somewhere other than its apps' sockets ($vhost_sockets):\n$proxies"
+    printf '%s\n' "$proxies" | grep -qxE "proxy_pass[[:space:]]+http://unix:$dir/http\\.sock:;" \
+      || fail "$vhost never proxies to $service's socket unix:$dir/http.sock:"
+  fi
   grep -rnE "(127\\.0\\.0\\.1|localhost|\\[::1\\]):$port([^0-9]|\$)" "$NGINX_ROOT" \
     && fail "an nginx config still proxies to $service's old TCP port $port"
   printf '%s\n' "$code" | awk -v svc="$service" '
