@@ -15,7 +15,10 @@ fail() { printf 'FAIL: %b\n' "$*" >&2; exit 1; }
 REL=1111111111111111111111111111111111111111
 BIN="$TMP/bin"; mkdir -p "$BIN"
 # flock is util-linux (the host has it; macOS does not).
-printf '#!/usr/bin/env bash\nexit 0\n' >"$BIN/flock"; chmod +x "$BIN/flock"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$BIN/flock"
+# setsid too (util-linux): here it only has to run the command.
+printf '#!/usr/bin/env bash\nexec "$@"\n' >"$BIN/setsid"
+chmod +x "$BIN/flock" "$BIN/setsid"
 
 g() { git -c user.email=t@example.invalid -c user.name=t -c init.defaultBranch=main "$@"; }
 g init -q --bare "$TMP/origin.git"
@@ -34,7 +37,7 @@ advance() {  # a new commit on origin/main, printed
 run_gate() {
   rm -f "$TMP/out"
   env PATH="$BIN:$PATH" SSH_ORIGINAL_COMMAND="$1" MEMORIAL_GATE_REPO="$TMP/host" \
-    MEMORIAL_GATE_LOCK="$TMP/lock" GATE_OUT="$TMP/out" bash "$GATE" 2>&1
+    MEMORIAL_GATE_LOCK="$TMP/lock" MEMORIAL_GATE_LOG_DIR="$TMP/logs" GATE_OUT="$TMP/out" bash "$GATE" 2>&1
 }
 
 TIP="$(advance two)"
@@ -43,7 +46,8 @@ TIP="$(advance two)"
 for cmd in "" "bash" "deploy-memorial-api-laravel $REL" "deploy-memorial-api-laravel $REL $TIP extra" \
   "deploy-memorial-api-laravel main $TIP" "deploy-memorial-api-laravel $REL ${TIP:0:12}" \
   "deploy-memorial-api-laravel $REL;id $TIP" "deploy-memorial-api-laravel ABCDEF1111111111111111111111111111111111 $TIP" \
-  "other-command $REL $TIP" "deploy-memorial-api-laravel \$(id) $TIP"; do
+  "other-command $REL $TIP" "deploy-memorial-api-laravel \$(id) $TIP" \
+  "deploy-memorial-api-laravel $REL $TIP"$'\n'"id" "deploy-memorial-api-laravel $REL $TIP"$'\r'; do
   if OUT="$(run_gate "$cmd")"; then fail "refused nothing for '$cmd':\n$OUT"; fi
   [ ! -e "$TMP/out" ] || fail "'$cmd' reached the deploy"
 done
@@ -57,6 +61,19 @@ grep -q 'approved for' <<<"$OUT" || fail "expected the approved-for explanation,
 # 3. The approved tip: the checkout fast-forwards to it and the deploy runs from it.
 OUT="$(run_gate "deploy-memorial-api-laravel $REL $TIP")" || fail "the approved tip was refused:\n$OUT"
 [ "$(cat "$TMP/out")" = "deployed $REL from $TIP" ] || fail "unexpected hand-over: $(cat "$TMP/out")"
+grep -q 'deploy exited 0' <<<"$OUT" || fail "the gate did not report the deploy's exit:\n$OUT"
+ls "$TMP"/logs/*.log >/dev/null 2>&1 || fail "the deploy's log was not kept"
+
+# 3b. The deploy's exit code and output reach the client.
+TIP="$(advance three-b)"
+cat >"$TMP/seed/scripts/deploy-memorial-api-laravel.sh" <<'STUB'
+echo "deploy says hello"; exit 7
+STUB
+g -C "$TMP/seed" add -A && g -C "$TMP/seed" commit -qm fail7 && g -C "$TMP/seed" push -q origin main
+TIP="$(g -C "$TMP/seed" rev-parse HEAD)"
+if OUT="$(run_gate "deploy-memorial-api-laravel $REL $TIP")"; then fail "a failing deploy must fail the gate"; fi
+grep -q 'deploy says hello' <<<"$OUT" || fail "the deploy's output was not streamed:\n$OUT"
+grep -q 'deploy exited 7' <<<"$OUT" || fail "the exit code was lost:\n$OUT"
 
 # 4. A checkout with local changes to tracked files is refused.
 TIP="$(advance four)"

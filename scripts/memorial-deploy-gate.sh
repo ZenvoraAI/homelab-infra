@@ -17,11 +17,18 @@ set -euo pipefail
 REPO="${MEMORIAL_GATE_REPO:-/opt/homelab-infra}"
 LOCK="${MEMORIAL_GATE_LOCK:-/run/lock/memorial-deploy.lock}"
 LOCK_WAIT_SECONDS=600
+# The deploy outlives this SSH session (see the end); its full output stays here.
+LOG_DIR="${MEMORIAL_GATE_LOG_DIR:-$HOME/memorial-deploy-logs}"
+LOGS_KEPT=20
 
 refuse() { echo "memorial-deploy-gate: $*" >&2; exit 1; }
 is_sha() { printf '%s' "$1" | grep -Eqx '[0-9a-f]{40}'; }
 
-# No word splitting or globbing of client input: exactly three fields.
+# One line only (read would silently drop the rest), then no word splitting or
+# globbing of client input: exactly three fields.
+case "${SSH_ORIGINAL_COMMAND:-}" in
+  *$'\n'*|*$'\r'*) refuse "only one line is allowed" ;;
+esac
 read -r -a words <<<"${SSH_ORIGINAL_COMMAND:-}"
 [ "${#words[@]}" -eq 3 ] && [ "${words[0]}" = deploy-memorial-api-laravel ] \
   || refuse "only 'deploy-memorial-api-laravel <release sha> <homelab sha>' is allowed"
@@ -44,4 +51,22 @@ remote_main="$(git rev-parse origin/main)"
 git merge --ff-only --quiet "$homelab_sha"
 [ "$(git rev-parse HEAD)" = "$homelab_sha" ] || refuse "checkout is not at $homelab_sha after the fast-forward"
 
-exec bash "$REPO/scripts/deploy-memorial-api-laravel.sh" "$release_sha"
+# The deploy runs detached from this session: a runner that times out, is
+# cancelled or loses its network must not kill it between the migration and
+# the readiness gate (where only it can roll back). Its own session, no stdin,
+# output to a log that is streamed back while it runs; it inherits the lock.
+umask 077
+mkdir -p "$LOG_DIR"
+log="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-${release_sha:0:12}.log"
+setsid bash "$REPO/scripts/deploy-memorial-api-laravel.sh" "$release_sha" </dev/null >"$log" 2>&1 &
+deploy_pid=$!
+tail -n +1 -f "$log" &
+tail_pid=$!
+rc=0
+wait "$deploy_pid" || rc=$?
+sleep 1
+kill "$tail_pid" 2>/dev/null || true
+# shellcheck disable=SC2012 # names are ours: <UTC stamp>-<sha>.log
+ls -1t -- "$LOG_DIR"/*.log | tail -n +$((LOGS_KEPT + 1)) | xargs -r rm --
+echo "memorial-deploy-gate: deploy exited $rc (log on the host: $log)"
+exit "$rc"

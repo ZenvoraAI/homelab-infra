@@ -702,6 +702,27 @@ Then merge, then dispatch the deploy with `<S>` and the new `main` sha. A first
 deploy that fails readiness stops both services (no previous release to return
 to); nginx does not depend on them yet.
 
+**Detached run.** The gate starts the deploy in its own session with its output
+in `~ubuntu/memorial-deploy-logs/` (newest 20 kept) and streams that log back.
+A runner that times out or drops its connection ends only the stream; the
+deploy still finishes or rolls back. Read the log on the host when that happens.
+
+**Limits of the gate (review 2026-11-20; decisions for the user):**
+
+- The Express deploy's key (aiqiuqi-memorial `DEPLOY_SSH_KEY`) still opens a
+  full shell as `ubuntu`, who has passwordless sudo. Until it is retired with
+  Express (phase 8) or given its own forced command, the gate narrows only the
+  new key; a stolen Express key is still the host.
+- The Express deploy runs `git pull --ff-only` in this checkout without the
+  gate's lock. Do not run an Express deploy while a Laravel deploy runs: the
+  pull could move the checkout after the gate checked it.
+- The host trusts the `production` environment to have verified the release
+  (on main, CI green); the key holder can name any published image. Keep that
+  environment limited to `main` with a required reviewer, and the key in it only.
+- From the seed until the first deploy passes, `.env` names a release that has
+  not passed readiness. Nothing starts it unless someone runs an unscoped
+  `docker compose up -d` (never do that here, see "Normal deployment model").
+
 **nginx** mounts `memorial-api-fpm` and `nginx/memorial/` read-only. A running
 nginx sees neither until it is recreated (`docker compose up -d --no-deps
 nginx`, a second of downtime for every site), which is due before the switch,

@@ -77,7 +77,8 @@ dump_name="$DATABASE_NAME-$(date -u +%Y%m%dT%H%M%SZ)-${RELEASE_SHA:0:12}.dump"
 (
   umask 077 &&
   mkdir -p "$PREMIGRATE_DIR" &&
-  rm -f -- "$PREMIGRATE_DIR"/*.partial &&
+  # Only stale leftovers: the Express deploy streams its own .partial into this directory.
+  find "$PREMIGRATE_DIR" -maxdepth 1 -name '*.partial' -mmin +60 -exec rm -f -- {} + &&
   sudo -u postgres pg_dump --format=custom --no-owner --no-privileges "$DATABASE_NAME" \
     >"$PREMIGRATE_DIR/$dump_name.partial" &&
   test -s "$PREMIGRATE_DIR/$dump_name.partial" &&
@@ -91,16 +92,12 @@ docker compose run --rm --no-deps -T --entrypoint php "$API" artisan migrate --f
   || die "migration failed; the running services were not changed (restore: $PREMIGRATE_DIR/$dump_name)"
 
 # --- swap ------------------------------------------------------------------------
-# The release a service runs now: what a failed gate returns to. Only a full
-# SHA tag counts (a container recreated from the pinned .env carries
-# <sha>@sha256:<digest>).
-running_release_tag() {
-  local id
-  id="$(docker compose ps -q "$1")"
-  test -n "$id" || return 0
-  { docker inspect -f '{{.Config.Image}}' "$id" || true; } | sed -nE 's/.*:([0-9a-f]{40})(@sha256:[0-9a-f]{64})?$/\1/p'
-}
-PREV_TAG="$(running_release_tag "$API")"
+# What a failed gate returns to: the last release that passed it, i.e. the pin
+# (<sha> or <sha>@sha256:<digest>), not whatever container happens to run now
+# (a crash-looping or half-rolled-back one never passed). No pin, or the pin is
+# this release (the first deploy, seeded per README): nothing to return to.
+PREV_TAG="$(scripts/image-pins.sh get "$API" 2>/dev/null | sed -nE 's/^([0-9a-f]{40})(@sha256:[0-9a-f]{64})?$/\1/p' || true)"
+[ "$PREV_TAG" != "$RELEASE_SHA" ] || PREV_TAG=""
 
 docker compose up -d "${SERVICES[@]}" 2>&1 | redact
 

@@ -20,9 +20,19 @@ DIGEST=sha256:$(printf '%064d' 7)
 REPO="$TMP/repo"; BIN="$TMP/bin"; LOG="$TMP/calls.log"
 mkdir -p "$REPO/scripts" "$BIN" "$TMP/secrets" "$TMP/dumps"
 cp "$ROOT/scripts/deploy-memorial-api-laravel.sh" "$REPO/scripts/"
-for s in refresh-memorial-secrets.sh refresh-memorial-laravel-secrets.sh image-pins.sh; do
+for s in refresh-memorial-secrets.sh refresh-memorial-laravel-secrets.sh; do
   printf '#!/usr/bin/env bash\necho "%s $*" >>"$CALLS"\n' "$s" >"$REPO/scripts/$s"
 done
+# image-pins.sh: `get` prints STUB_PIN (unset: fails, as for an unpinned
+# variable); `promote` fails when STUB_PROMOTE_FAIL=1.
+cat >"$REPO/scripts/image-pins.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "image-pins.sh $*" >>"$CALLS"
+case "$1" in
+  get) [ -n "${STUB_PIN:-}" ] || exit 1; echo "$STUB_PIN" ;;
+  promote) [ "${STUB_PROMOTE_FAIL:-}" != 1 ] ;;
+esac
+STUB
 chmod +x "$REPO/scripts"/*.sh
 
 # sudo: `sudo env ... cmd` and `sudo -u postgres cmd` both just run the command.
@@ -47,11 +57,11 @@ cat >"$BIN/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "docker $* [tag=${MEMORIAL_API_LARAVEL_TAG:-}]" >>"$CALLS"
 case "$*" in
-  *"artisan memorial:preflight"*) [ "${STUB_PREFLIGHT_FAIL:-}" = 1 ] && { echo "AUTH_JWT_SECRET is required"; exit 1; }; exit 0 ;;
+  *"artisan memorial:preflight"*)
+    [ "${STUB_PREFLIGHT_SECRET:-}" = 1 ] && echo "DSN key=QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9w"
+    [ "${STUB_PREFLIGHT_FAIL:-}" = 1 ] && { echo "AUTH_JWT_SECRET is required"; exit 1; }; exit 0 ;;
   *"artisan migrate"*) [ "${STUB_MIGRATE_FAIL:-}" = 1 ] && exit 1; exit 0 ;;
   "compose ps -q --status running"*) [ "${STUB_READY:-1}" = 1 ] && echo sched-id; exit 0 ;;
-  "compose ps -q memorial-api-laravel") [ -n "${STUB_PREV_IMAGE:-}" ] && echo api-id; exit 0 ;;
-  "inspect -f"*) echo "$STUB_PREV_IMAGE"; exit 0 ;;
   *"fcgi-probe.sh"*) [ "${STUB_READY:-1}" = 1 ]; exit ;;
   images*) exit 0 ;;
 esac
@@ -77,7 +87,7 @@ if OUT="$(run_deploy main)"; then fail "a non-sha release must be refused:\n$OUT
 
 # 2. Happy path, upgrade from PREV: every step, in order, pin last.
 valid_env
-OUT="$(STUB_PREV_IMAGE="ghcr.io/zenvoraai/memorial-api:$PREV@$DIGEST" run_deploy "$REL")" || fail "happy path failed:\n$OUT\n$(cat "$LOG")"
+OUT="$(STUB_PIN="$PREV@$DIGEST" run_deploy "$REL")" || fail "happy path failed:\n$OUT\n$(cat "$LOG")"
 order=(refresh-memorial-secrets.sh refresh-memorial-laravel-secrets.sh "compose pull" "artisan memorial:preflight"
   "pg_dump --format=custom" "artisan migrate --force" "compose up -d memorial-api-laravel memorial-api-laravel-scheduler"
   "fpm-auth.sock" "image-pins.sh promote memorial-api-laravel $REL")
@@ -95,7 +105,7 @@ ls "$TMP"/dumps/memorial_site-*-111111111111.dump >/dev/null 2>&1 || fail "no pr
 # 3. Dumps beyond five are pruned, newest kept.
 for i in 1 2 3 4 5 6; do touch -t "20260101000$i" "$TMP/dumps/memorial_site-old$i.dump"; done
 valid_env
-STUB_PREV_IMAGE="ghcr.io/zenvoraai/memorial-api:$PREV" run_deploy "$REL" >/dev/null || fail "second deploy failed"
+STUB_PIN="$PREV" run_deploy "$REL" >/dev/null || fail "second deploy failed"
 [ "$(find "$TMP/dumps" -name '*.dump' | wc -l | tr -d ' ')" = 5 ] || fail "expected 5 dumps kept:\n$(ls "$TMP/dumps")"
 
 touched_nothing() {
@@ -126,11 +136,30 @@ touched_nothing migrate
 
 # 7. Not ready after the swap, with a previous release: back to it, no pin.
 valid_env
-if OUT="$(STUB_READY=0 STUB_PREV_IMAGE="ghcr.io/zenvoraai/memorial-api:$PREV@$DIGEST" run_deploy "$REL")"; then
+if OUT="$(STUB_READY=0 STUB_PIN="$PREV@$DIGEST" run_deploy "$REL")"; then
   fail "an unready release must fail the deploy"
 fi
 grep -F "compose up -d" "$LOG" | grep -qF "[tag=$PREV]" || fail "did not roll back to $PREV:\n$(cat "$LOG")"
 called promote && fail "an unready release was pinned"
+
+# 7b. The pin is the release itself (the seeded first deploy): nothing to go
+# back to, so the unready release is stopped rather than "restored".
+valid_env
+if OUT="$(STUB_READY=0 STUB_PIN="$REL@$DIGEST" run_deploy "$REL")"; then fail "an unready seeded release must fail"; fi
+called "compose stop memorial-api-laravel memorial-api-laravel-scheduler" || fail "the seeded unready release was left running:\n$(cat "$LOG")"
+[ "$(grep -c "compose up -d" "$LOG")" = 1 ] || fail "a seeded pin must not be 'rolled back' to:\n$(cat "$LOG")"
+
+# 7c. A failed promote fails the job but does not roll back a healthy release.
+valid_env
+if OUT="$(STUB_PROMOTE_FAIL=1 STUB_PIN="$PREV" run_deploy "$REL")"; then fail "a failed promote must fail the job"; fi
+grep -q "image-pins.sh promote memorial-api-laravel $REL" <<<"$OUT" || fail "expected the manual promote command, got:\n$OUT"
+[ "$(grep -c "compose up -d" "$LOG")" = 1 ] || fail "a healthy release was rolled back over a failed promote:\n$(cat "$LOG")"
+
+# 7d. Docker output is redacted: a long base64 run never reaches the log.
+valid_env
+if OUT="$(STUB_PREFLIGHT_SECRET=1 STUB_PREFLIGHT_FAIL=1 run_deploy "$REL")"; then fail "preflight must fail"; fi
+grep -q 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9w' <<<"$OUT" && fail "a base64 secret reached the output"
+grep -q '\[redacted\]' <<<"$OUT" || fail "expected [redacted] in:\n$OUT"
 
 # 8. Not ready on the first deploy: the new services are stopped, no pin.
 valid_env
