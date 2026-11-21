@@ -48,6 +48,9 @@ GOOGLE_KEYS="GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_REDIRECT_URI"
 # Required exactly when OBJECT_STORE=s3. The securevault-photos IAM user's key
 # (p/* only), never the host's deploy key.
 PHOTO_KEYS="PHOTO_S3_BUCKET PHOTO_S3_REGION PHOTO_S3_ACCESS_KEY_ID PHOTO_S3_SECRET_ACCESS_KEY"
+# Valtou Cards (cards.valtou.com): both or none. Unset leaves the cards site off
+# (every /api/cards/* route answers 404). Checked like BootChecks::cardsApartFromPortal.
+CARDS_KEYS="WEBAUTHN_CARDS_RP_ID WEBAUTHN_CARDS_ORIGINS"
 # BootChecks MIN_JWT_SECRET_LENGTH / MIN_HINT_SECRET_LENGTH.
 MIN_APP_SECRET_LEN=32
 MIN_AWS_SECRET_LEN=30
@@ -63,7 +66,7 @@ die() { echo "$NAME: $* -- aborting, $ENV_FILE not touched" >&2; exit 1; }
 
 [ "$#" -eq 0 ] || { echo "usage: $NAME (no arguments)" >&2; exit 2; }
 
-KNOWN_KEYS="$REQUIRED_KEYS $OPTIONAL_KEYS $GOOGLE_KEYS $PHOTO_KEYS"
+KNOWN_KEYS="$REQUIRED_KEYS $OPTIONAL_KEYS $GOOGLE_KEYS $PHOTO_KEYS $CARDS_KEYS"
 
 NL='
 '
@@ -114,6 +117,10 @@ check_names() {
   case "$(count_present "$GOOGLE_KEYS" "$present")" in
     0|3) ;;
     *) die "GOOGLE_* is all three or none in SSM, found $(count_present "$GOOGLE_KEYS" "$present")" ;;
+  esac
+  case "$(count_present "$CARDS_KEYS" "$present")" in
+    0|2) ;;
+    *) die "WEBAUTHN_CARDS_* is both or none in SSM, found $(count_present "$CARDS_KEYS" "$present")" ;;
   esac
   printf '%s\n' "$present"
 }
@@ -190,12 +197,45 @@ check_https_url() {
 
 # WebAuthn binds the RP ID into every credential at registration: a bare
 # lowercase domain, never a URL.
-check_rp_id() {
-  case "$(val WEBAUTHN_RP_ID)" in
-    *[!a-z0-9.-]*|.*|*.|'') die "WEBAUTHN_RP_ID must be a bare lowercase domain (no scheme, port or path)" ;;
+check_rp_id() { # key (default WEBAUTHN_RP_ID)
+  key=${1:-WEBAUTHN_RP_ID}
+  case "$(val "$key")" in
+    *[!a-z0-9.-]*|.*|*.|'') die "$key must be a bare lowercase domain (no scheme, port or path)" ;;
     *.*) ;;
-    *) die "WEBAUTHN_RP_ID must be a bare lowercase domain (no scheme, port or path)" ;;
+    *) die "$key must be a bare lowercase domain (no scheme, port or path)" ;;
   esac
+}
+
+trimmed_entries() { # key -> one trimmed, non-empty entry per line
+  old_ifs=$IFS
+  IFS=,
+  for entry in $(val "$1"); do
+    entry=$(printf '%s' "$entry" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -n "$entry" ] && printf '%s\n' "$entry"
+  done
+  IFS=$old_ifs
+}
+
+# BootChecks::cardsApartFromPortal: its own RP ID, its origins on that RP ID,
+# none of them a portal WebAuthn origin, each also listed in ALLOWED_ORIGINS.
+check_cards() {
+  check_rp_id WEBAUTHN_CARDS_RP_ID
+  check_origin_list WEBAUTHN_CARDS_ORIGINS
+  cards_rp=$(val WEBAUTHN_CARDS_RP_ID)
+  [ "$cards_rp" != "$(val WEBAUTHN_RP_ID)" ] || die "WEBAUTHN_CARDS_RP_ID must differ from WEBAUTHN_RP_ID"
+  portal=$(trimmed_entries WEBAUTHN_ORIGINS)
+  allowed=$(trimmed_entries ALLOWED_ORIGINS)
+  for entry in $(trimmed_entries WEBAUTHN_CARDS_ORIGINS); do
+    host=${entry#https://}
+    host=${host%%:*}
+    case "$host" in
+      "$cards_rp"|*."$cards_rp") ;;
+      *) die "WEBAUTHN_CARDS_ORIGINS has a host that is neither WEBAUTHN_CARDS_RP_ID nor a subdomain of it" ;;
+    esac
+    printf '%s\n' "$portal" | grep -qxF -- "$entry" && die "WEBAUTHN_CARDS_ORIGINS must not contain a WEBAUTHN_ORIGINS origin"
+    printf '%s\n' "$allowed" | grep -qxF -- "$entry" || die "WEBAUTHN_CARDS_ORIGINS entries must also be listed in ALLOWED_ORIGINS"
+  done
+  return 0
 }
 
 check_smtp() {
@@ -260,6 +300,7 @@ validate() { # present
   is_in GOOGLE_REDIRECT_URI "$1" && check_https_url GOOGLE_REDIRECT_URI
   is_in EXTENSION_IDS "$1" && check_extension_ids
   check_object_store "$1"
+  is_in WEBAUTHN_CARDS_RP_ID "$1" && check_cards
   return 0
 }
 

@@ -100,6 +100,9 @@ set_full_optionals() {
   set_param PHOTO_S3_REGION 'ap-southeast-2'
   set_param PHOTO_S3_ACCESS_KEY_ID 'AKIAIOSFODNN7EXAMPLE'
   set_param PHOTO_S3_SECRET_ACCESS_KEY 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+  set_param ALLOWED_ORIGINS 'https://portal.valtou.com, https://valtou.com, https://cards.valtou.com'
+  set_param WEBAUTHN_CARDS_RP_ID 'cards.valtou.com'
+  set_param WEBAUTHN_CARDS_ORIGINS 'https://cards.valtou.com'
 }
 
 # The exact file the script must write: fixed key order, one header line.
@@ -110,7 +113,8 @@ expected_file() {
              FRONTEND_URL CAPTCHA_SECRET SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASS EMAIL_FROM \
              CAPTCHA_PROVIDER PASSWORD_RESET_PATH EXTENSION_IDS OBJECT_STORE \
              GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_REDIRECT_URI \
-             PHOTO_S3_BUCKET PHOTO_S3_REGION PHOTO_S3_ACCESS_KEY_ID PHOTO_S3_SECRET_ACCESS_KEY; do
+             PHOTO_S3_BUCKET PHOTO_S3_REGION PHOTO_S3_ACCESS_KEY_ID PHOTO_S3_SECRET_ACCESS_KEY \
+             WEBAUTHN_CARDS_RP_ID WEBAUTHN_CARDS_ORIGINS; do
     [ -e "$PARAMS/$key" ] && printf "%s='%s'\n" "$key" "$(cat "$PARAMS/$key")"
   done
   [ -e "$PARAMS/EXTENSION_IDS" ] && printf "ALLOWED_EXTENSION_ORIGINS='chrome-extension://%s,chrome-extension://%s'\n" "$EXT_A" "$EXT_B"
@@ -246,6 +250,18 @@ refuse EMAIL_FROM "a@b.c"$'\n'"x" 'EMAIL_FROM from SSM contains a line break'
 refuse SMTP_USER "$(printf 'user\rname')" 'SMTP_USER from SSM contains a line break'
 refuse SMTP_PASS "it's a password" 'contains a single quote'
 
+refuse_cards() { # key value pattern -- on top of a valid cards pair
+  seed_old_file; set_valid_params; set_full_optionals; set_param "$1" "$2"
+  expect_refusal "cards $1='$2'" "$3"
+}
+refuse_cards WEBAUTHN_CARDS_RP_ID 'https://cards.valtou.com' 'WEBAUTHN_CARDS_RP_ID must be a bare lowercase domain'
+refuse_cards WEBAUTHN_CARDS_RP_ID 'valtou.com' 'WEBAUTHN_CARDS_RP_ID must differ from WEBAUTHN_RP_ID'
+refuse_cards WEBAUTHN_CARDS_ORIGINS 'https://cards.valtou.com/' 'WEBAUTHN_CARDS_ORIGINS entry 0 is not a bare https origin'
+refuse_cards WEBAUTHN_CARDS_ORIGINS 'https://evil.example' 'neither WEBAUTHN_CARDS_RP_ID nor a subdomain of it'
+refuse_cards WEBAUTHN_CARDS_ORIGINS 'https://cards.valtou.com, https://x.cards.valtou.com' 'entries must also be listed in ALLOWED_ORIGINS'
+seed_old_file; set_valid_params; set_full_optionals; set_param WEBAUTHN_ORIGINS 'https://portal.valtou.com, https://cards.valtou.com'
+expect_refusal "a cards origin that is also a portal WebAuthn origin" 'must not contain a WEBAUTHN_ORIGINS origin'
+
 seed_old_file; set_valid_params; set_full_optionals; set_param PHOTO_S3_SECRET_ACCESS_KEY 'short'
 expect_refusal "a short photo secret" 'PHOTO_S3_SECRET_ACCESS_KEY from SSM is only 5 chars'
 
@@ -261,6 +277,8 @@ seed_old_file; set_valid_params; echo /securevault/prod/old/JWT_SECRET >"$LOGS/e
 expect_refusal "a nested name" 'unknown parameter /securevault/prod/old/JWT_SECRET'
 seed_old_file; set_valid_params; set_param GOOGLE_CLIENT_ID 'id.apps.googleusercontent.com'
 expect_refusal "a lone GOOGLE_CLIENT_ID" 'all three or none in SSM, found 1'
+seed_old_file; set_valid_params; set_param WEBAUTHN_CARDS_RP_ID 'cards.valtou.com'
+expect_refusal "a lone WEBAUTHN_CARDS_RP_ID" 'WEBAUTHN_CARDS_* is both or none in SSM, found 1'
 
 # 6. AWS failures abort cleanly.
 seed_old_file; set_valid_params; touch "$LOGS/aws-fail-get-parameters-by-path"
