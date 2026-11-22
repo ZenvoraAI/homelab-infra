@@ -675,14 +675,17 @@ sudo install -o root -g root -m 0755 scripts/memorial-deploy-gate.sh /usr/local/
 `restrict` turns off port forwarding, the pty and agent/X11 forwarding; the
 gate refuses every command but `deploy-memorial-api-laravel <release sha>
 <homelab sha>`, and runs it only when `<homelab sha>` is the tip of this
-repository's `main` (the commit the GitHub `production` environment's reviewer
-approved), after a fast-forward to it. Re-install the gate whenever
+repository's `main` (the commit named in the deploy run's `homelab_sha` input,
+which a dispatcher typed), after a fast-forward to it. Re-install the gate whenever
 `scripts/memorial-deploy-gate.sh` changes; the copy in the checkout is never
 run.
 
 GitHub settings this relies on (the user sets them): memorial-api's
-`production` environment requires a reviewer and allows only `main`; this
-repository's `main` is protected (pull requests only, no force push).
+`production` environment holds the three deploy secrets and allows only `main`;
+this repository's `main` is protected (pull requests only, no force push).
+Required reviewers are not among them: GitHub refuses that rule on a private
+repository on the Free plan, so the deploy's approval is the manual dispatch of
+the two SHAs, not a second person.
 
 **First deploy.** `MEMORIAL_API_LARAVEL_TAG` must be pinned before the commit
 that adds these services reaches `main` (strict pins: an unset variable stops
@@ -718,7 +721,8 @@ deploy still finishes or rolls back. Read the log on the host when that happens.
   pull could move the checkout after the gate checked it.
 - The host trusts the `production` environment to have verified the release
   (on main, CI green); the key holder can name any published image. Keep that
-  environment limited to `main` with a required reviewer, and the key in it only.
+  environment limited to `main`, its secrets in it only, and remember that no
+  second person reviews the dispatch on this plan.
 - From the seed until the first deploy passes, `.env` names a release that has
   not passed readiness. Nothing starts it unless someone runs an unscoped
   `docker compose up -d` (never do that here, see "Normal deployment model").
