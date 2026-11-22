@@ -24,7 +24,6 @@ NGINX_DIR="$NGINX_ROOT/conf.d"
 
 # service volume socket-dir vhost old-port
 APPS="api family-api-sock /run/family-api family-api.conf 4000
-memorial-api memorial-api-sock /run/memorial-api - 3001
 zenvora-admin zenvora-admin-sock /run/zenvora-admin admin.valtou.com.conf 3100"
 
 fail() { printf 'FAIL: %b\n' "$*" >&2; exit 1; }

@@ -12,7 +12,6 @@ set -euo pipefail
 #     no effective capabilities anyway, so this only removes what a privilege
 #     escalation could pick up (NET_RAW on the host's interfaces, with host
 #     networking).
-#   - memorial-api: read_only root filesystem plus a small /tmp tmpfs -- its
 #     runtime code reads files only and its migrations run outside the
 #     container.
 #   - memorial-api-laravel and its scheduler (USER www-data): the same, run
@@ -30,8 +29,8 @@ COMPOSE="$COMPOSE" ruby -ryaml -e '
   doc = YAML.load(File.read(ENV.fetch("COMPOSE")))  # system ruby 2.6: aliases allowed by default
   services = doc.fetch("services")
   errors = []
-  non_root_apps = %w[api securevault-api securevault-scheduler dayandyou-api-staging dayandyou-api-scheduler-staging memorial-api memorial-api-laravel memorial-api-laravel-scheduler zenvora-admin]
-  read_only = { "memorial-api" => "/tmp", "memorial-api-laravel" => "/tmp", "memorial-api-laravel-scheduler" => "/tmp" }
+  non_root_apps = %w[api securevault-api securevault-scheduler dayandyou-api-staging dayandyou-api-scheduler-staging memorial-api-laravel memorial-api-laravel-scheduler zenvora-admin]
+  read_only = { "memorial-api-laravel" => "/tmp", "memorial-api-laravel-scheduler" => "/tmp" }
 
   errors << "parsed only #{services.size} services" if services.size < 10
   services.each do |name, svc|

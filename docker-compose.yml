@@ -48,7 +48,6 @@ services:
       - ./nginx/securevault:/etc/nginx/securevault:ro
       - securevault-fpm:/run/securevault-fpm:ro
       - family-api-sock:/run/family-api:ro
-      - memorial-api-sock:/run/memorial-api:ro
       # The Laravel memorial API's FPM sockets and its FastCGI include.
       - memorial-api-fpm:/run/memorial-api-fpm:ro
       - ./nginx/memorial:/etc/nginx/memorial:ro
@@ -228,38 +227,12 @@ services:
       disable: true
     # Measured peak 93 MiB locally (schedule:run boots every minute).
     mem_limit: 128m
-  memorial-api:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/aiqiuqi-memorial-api:${MEMORIAL_API_TAG:?MEMORIAL_API_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
-    container_name: homelab-memorial-api
-    network_mode: host
-    restart: unless-stopped
-    logging: *default-logging
-    security_opt:
-      - no-new-privileges:true
-    # Non-root image (USER node/bun); see README "Container hardening".
-    cap_drop:
-      - ALL
-    # Runtime code only reads files; migrations run outside the container.
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    env_file:
-      - /opt/secrets/aiqiuqi-memorial/api.env
-    # HTTP on a unix socket, not 127.0.0.1:3001, which every host-network
-    # service can reach around nginx. Only this service and nginx (read-only)
-    # may mount memorial-api-sock (tests/verify-app-sockets.sh). A literal
-    # value, so it wins over env_file and needs no shell variable.
-    environment:
-      - LISTEN_SOCKET=/run/memorial-api/http.sock
-    volumes:
-      - memorial-api-sock:/run/memorial-api
-    mem_limit: 192m
-  # The memorial API ported to Laravel (ZenvoraAI/memorial-api), running next
-  # to the Express memorial-api above until nginx is switched to it (memorial-api
-  # docs/laravel-migration/phase-4-plan.md). Same database, same sessions, so
-  # nginx can move between the two in either direction. Deployed only by
-  # scripts/deploy-memorial-api-laravel.sh (MEMORIAL_API_LARAVEL_TAG; the
-  # scheduler shares the pin).
+  # The memorial API, ported to Laravel (ZenvoraAI/memorial-api) and now the
+  # only one: nginx serves it over FastCGI (memorial-api
+  # docs/laravel-migration/phase-4-plan.md, step 6). The Express API that ran
+  # here before was retired on 2026-11-22; nothing routes to it any more.
+  # Deployed only by scripts/deploy-memorial-api-laravel.sh
+  # (MEMORIAL_API_LARAVEL_TAG; the scheduler shares the pin).
   memorial-api-laravel:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/memorial-api:${MEMORIAL_API_LARAVEL_TAG:?MEMORIAL_API_LARAVEL_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-memorial-api-laravel
@@ -481,7 +454,6 @@ volumes:
   securevault-fpm: {}
   # The apps' HTTP sockets; see api, memorial-api and zenvora-admin.
   family-api-sock: {}
-  memorial-api-sock: {}
   zenvora-admin-sock: {}
   # The Laravel memorial API's PHP-FPM sockets; see memorial-api-laravel.
   memorial-api-fpm: {}

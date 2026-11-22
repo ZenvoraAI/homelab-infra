@@ -17,8 +17,7 @@ release workflows remain in their own repositories.
 | `securevault-scheduler` | `homelab-securevault-scheduler` | — | none (no listener) | 256m |
 | `dayandyou-api-staging` | `homelab-dayandyou-api-staging` | none (FastCGI on unix sockets, `dayandyou-api-fpm-staging` volume) | `api-origin-staging.dayandyou.com` (CloudFront origin only) | 320m |
 | `dayandyou-api-scheduler-staging` | `homelab-dayandyou-api-scheduler-staging` | — | none (no listener) | 128m |
-| `memorial-api` | `homelab-memorial-api` | none (HTTP on a unix socket, `memorial-api-sock` volume) | `api.aiqiuqi.com` | 192m |
-| `memorial-api-laravel` | `homelab-memorial-api-laravel` | none (FastCGI on unix sockets, `memorial-api-fpm` volume) | none until the nginx switch (then `api.aiqiuqi.com`; see "Memorial API on Laravel") | 256m |
+| `memorial-api-laravel` | `homelab-memorial-api-laravel` | none (FastCGI on unix sockets, `memorial-api-fpm` volume) | `api.aiqiuqi.com` | 256m |
 | `memorial-api-laravel-scheduler` | `homelab-memorial-api-laravel-scheduler` | — | none (no listener) | 96m |
 | `docker-socket-proxy` | `homelab-docker-socket-proxy` | none (internal network only) | none | 16m |
 | `docker-api-filter` | `homelab-docker-api-filter` | none (private network only) | none | 16m |
@@ -85,8 +84,10 @@ aws lightsail put-instance-public-ports --instance-name Ubuntu-1 --port-infos \
 ### Memory budget (proposal, 2026-10-31; no limit changed)
 
 The only measurement on record is 2026-08-16 (`docs/superpowers/specs/2026-08-16-zenvora-admin-design.md`):
-every container together used about 660 MB, and memorial-api sat at
-171.9/192 MiB. That supports no reduction, so none is made here. Native
+every container together used about 660 MB, and the Express memorial-api sat at
+171.9/192 MiB (it has since been retired; the Laravel pair measured 28 and
+31 MiB against 256m and 96m limits on 2026-11-22). That supports no reduction,
+so none is made here. Native
 Postgres shares the same 1.9 GiB and has no ceiling at all, which is what an
 oversubscribed OOM puts at risk.
 
@@ -97,7 +98,6 @@ oversubscribed OOM puts at risk.
 | securevault-scheduler | 256m | not measured | measure after the cutover |
 | dayandyou-api-staging | 320m | not measured (main pool 2 + payments pool 1-2) | re-measure once the API's argon2 gate lands |
 | dayandyou-api-scheduler-staging | 128m | 93 MiB peak, measured locally | keep |
-| memorial-api | 192m | 171.9 MiB (89.5%) | keep or raise slightly; it is the one near its ceiling |
 | nginx / filter / proxy / zenvora-admin | 64m / 16m / 16m / 128m | small | keep |
 | **Total** | **2288 MiB** (compose limits, 2026-11-19, after the memorial worker's 512 MiB left) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
 
@@ -156,7 +156,6 @@ To add a service, pin its variable on the host before merging.
 | `FAMILY_API_TAG` | `api` | tag of `family-media-api` |
 | `SECUREVAULT_API_TAG` | `securevault-api`, `securevault-scheduler` | tag of `securevault-api-laravel` |
 | `DAYANDYOU_API_STAGING_TAG` | `dayandyou-api-staging`, `dayandyou-api-scheduler-staging` | tag of `dayandyou-api` |
-| `MEMORIAL_API_TAG` | `memorial-api` | tag of `aiqiuqi-memorial-api` |
 | `MEMORIAL_API_LARAVEL_TAG` | `memorial-api-laravel`, `memorial-api-laravel-scheduler` | tag of `memorial-api` |
 | `ZENVORA_ADMIN_TAG` | `zenvora-admin` | tag of `zenvora-admin` |
 
@@ -277,7 +276,7 @@ Health checks on the host:
 ```bash
 docker compose exec -T api node dist/probe.js  # family API (unix socket; /health/ready)
 docker compose exec -T securevault-api /usr/local/share/securevault/docker/fcgi-probe.sh /readyz  # SecureVault API (FastCGI only)
-docker compose exec -T memorial-api node dist/probe.js /health/ready  # memorial API (unix socket)
+docker compose exec -T memorial-api-laravel fcgi-probe.sh /health/ready  # memorial API (FastCGI socket)
 docker compose exec -T zenvora-admin bun src/probe.ts  # zenvora-admin (unix socket; /healthz)
 docker compose exec -T dayandyou-api-staging fcgi-probe.sh /api/health  # Day and You API staging (FastCGI only)
 ```
@@ -646,12 +645,11 @@ user out.
 ## Memorial API on Laravel
 
 `memorial-api-laravel` (PHP-FPM) and `memorial-api-laravel-scheduler` run the
-memorial API ported to Laravel (ZenvoraAI/memorial-api) next to the Express
-`memorial-api`. Both read the same `api.env`, the same database and accept the
-same sessions, so nginx can be switched between them in either direction; the
-plan, and the order of every step, is memorial-api
-`docs/laravel-migration/phase-4-plan.md`. Until the switch, nginx sends nothing
-to them.
+memorial API ported to Laravel (ZenvoraAI/memorial-api), and nginx serves
+`api.aiqiuqi.com` from them over FastCGI. The Express API that ran here
+before was switched over on 2026-11-22 and retired the same day; the plan and
+the order of every step is memorial-api
+`docs/laravel-migration/phase-4-plan.md`.
 
 **Deploys** come only from memorial-api's `deploy.yml`, through a deploy key
 that can do one thing. CI holds no database URL and opens no tunnel; the
@@ -712,13 +710,13 @@ deploy still finishes or rolls back. Read the log on the host when that happens.
 
 **Limits of the gate (review 2026-11-20; decisions for the user):**
 
-- The Express deploy's key (aiqiuqi-memorial `DEPLOY_SSH_KEY`) still opens a
-  full shell as `ubuntu`, who has passwordless sudo. Until it is retired with
-  Express (phase 8) or given its own forced command, the gate narrows only the
-  new key; a stolen Express key is still the host.
-- The Express deploy runs `git pull --ff-only` in this checkout without the
-  gate's lock. Do not run an Express deploy while a Laravel deploy runs: the
-  pull could move the checkout after the gate checked it.
+- The Express deploy's key (aiqiuqi-memorial `DEPLOY_SSH_KEY`) opens a full
+  shell as `ubuntu`, who has passwordless sudo. Retiring Express removes it
+  (2026-11-22); until that key is deleted from the repository's secrets, a
+  stolen one is still the host.
+- The Express deploy ran `git pull --ff-only` in this checkout without the
+  gate's lock, so it could move the checkout after the gate had checked it.
+  Retiring it removes that race.
 - The host trusts the `production` environment to have verified the release
   (on main, CI green); the key holder can name any published image. Keep that
   environment limited to `main`, its secrets in it only, and remember that no
@@ -729,7 +727,8 @@ deploy still finishes or rolls back. Read the log on the host when that happens.
 
 **nginx** mounts `memorial-api-fpm` and `nginx/memorial/` read-only. A running
 nginx sees neither until it is recreated (`docker compose up -d --no-deps
-nginx`, a second of downtime for every site), which is due before the switch,
+nginx`, a second of downtime for every site). It was recreated on 2026-11-22,
+when nginx was switched to the Laravel API,
 not before the first deploy.
 
 ## Container hardening

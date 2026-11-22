@@ -132,9 +132,9 @@ echo "$REPO@$(dg 3)" >"$FIX/digests/$(key "ghcr.io/zenvoraai/family-media-api:$S
 sed -i.bak '/FAMILY_API_TAG=/d' "$IMAGE_PINS_ENV_FILE"; rm -f "$IMAGE_PINS_ENV_FILE.bak" "$IMAGE_PINS_STATE_DIR/FAMILY_API_TAG.history"
 
 # --- a value whose digest cannot be resolved is pinned, but not silently ---------
-"$PINS" promote memorial-api "$SHA3" >/dev/null 2>"$TMP/nodigest.err" || fail "promote of a bare SHA failed"
+"$PINS" promote memorial-api-laravel "$SHA3" >/dev/null 2>"$TMP/nodigest.err" || fail "promote of a bare SHA failed"
 grep -q "no local digest" "$TMP/nodigest.err" || fail "promote stored a bare SHA without warning"
-sed -i.bak '/MEMORIAL_API_TAG=/d' "$IMAGE_PINS_ENV_FILE"; rm -f "$IMAGE_PINS_ENV_FILE.bak" "$IMAGE_PINS_STATE_DIR/MEMORIAL_API_TAG.history"
+sed -i.bak '/MEMORIAL_API_LARAVEL_TAG=/d' "$IMAGE_PINS_ENV_FILE"; rm -f "$IMAGE_PINS_ENV_FILE.bak" "$IMAGE_PINS_STATE_DIR/MEMORIAL_API_LARAVEL_TAG.history"
 
 # --- seed pins what runs now --------------------------------------------------
 seed_container() {  # name config-image image-id repo-digest-lines
@@ -149,7 +149,6 @@ seed_container homelab-securevault-api ghcr.io/zenvoraai/securevault-api-laravel
 # Already pinned by promote above; seed must not replace it with :staging.
 seed_container homelab-dayandyou-api-staging "$REPO:staging" sha256:img-dyas "$REPO@$(dg 28)"
 seed_container homelab-dayandyou-api-scheduler-staging "$REPO:staging" sha256:img-dyas "$REPO@$(dg 28)"
-seed_container homelab-memorial-api ghcr.io/zenvoraai/aiqiuqi-memorial-api:latest sha256:img-ma "ghcr.io/zenvoraai/aiqiuqi-memorial-api@$(dg 25)"
 seed_container homelab-memorial-api-laravel "ghcr.io/zenvoraai/memorial-api:$SHA3" sha256:img-mal "ghcr.io/zenvoraai/memorial-api@$(dg 26)"
 # Running from the pre-transfer namespace: must not be pinned against zenvoraai.
 seed_container homelab-zenvora-admin ghcr.io/qclawchang/zenvora-admin:latest sha256:img-za "ghcr.io/qclawchang/zenvora-admin@$(dg 27)"
