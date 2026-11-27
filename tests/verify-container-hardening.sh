@@ -18,6 +18,9 @@ set -euo pipefail
 #     exactly so by ZenvoraAI/memorial-api scripts/docker-smoke.sh ("root
 #     filesystem is read-only"); FPM writes only its sockets (a volume) and
 #     /tmp, migrations run as a one-off container before the swap.
+#   - family-api-laravel (USER www-data): the same, run exactly so by
+#     ZenvoraAI/family-media-api scripts/docker-smoke.sh ("root filesystem is
+#     read-only"); its /tmp also holds the Node pixel jobs' files.
 # nginx, docker-api-filter and docker-socket-proxy start as root and keep
 # their default capabilities: not verifiable without running those images.
 
@@ -29,8 +32,8 @@ COMPOSE="$COMPOSE" ruby -ryaml -e '
   doc = YAML.load(File.read(ENV.fetch("COMPOSE")))  # system ruby 2.6: aliases allowed by default
   services = doc.fetch("services")
   errors = []
-  non_root_apps = %w[api securevault-api securevault-scheduler dayandyou-api-staging dayandyou-api-scheduler-staging memorial-api-laravel memorial-api-laravel-scheduler zenvora-admin]
-  read_only = { "memorial-api-laravel" => "/tmp", "memorial-api-laravel-scheduler" => "/tmp" }
+  non_root_apps = %w[api securevault-api securevault-scheduler dayandyou-api-staging dayandyou-api-scheduler-staging memorial-api-laravel memorial-api-laravel-scheduler family-api-laravel zenvora-admin]
+  read_only = { "memorial-api-laravel" => "/tmp", "memorial-api-laravel-scheduler" => "/tmp", "family-api-laravel" => "/tmp" }
 
   errors << "parsed only #{services.size} services" if services.size < 10
   services.each do |name, svc|

@@ -149,6 +149,7 @@ seed_container homelab-securevault-api ghcr.io/zenvoraai/securevault-api-laravel
 # Already pinned by promote above; seed must not replace it with :staging.
 seed_container homelab-dayandyou-api-staging "$REPO:staging" sha256:img-dyas "$REPO@$(dg 28)"
 seed_container homelab-dayandyou-api-scheduler-staging "$REPO:staging" sha256:img-dyas "$REPO@$(dg 28)"
+seed_container homelab-family-api-laravel "ghcr.io/zenvoraai/family-media-api-laravel:$SHA3" sha256:img-fal "ghcr.io/zenvoraai/family-media-api-laravel@$(dg 29)"
 seed_container homelab-memorial-api-laravel "ghcr.io/zenvoraai/memorial-api:$SHA3" sha256:img-mal "ghcr.io/zenvoraai/memorial-api@$(dg 26)"
 # Running from the pre-transfer namespace: must not be pinned against zenvoraai.
 seed_container homelab-zenvora-admin ghcr.io/qclawchang/zenvora-admin:latest sha256:img-za "ghcr.io/qclawchang/zenvora-admin@$(dg 27)"

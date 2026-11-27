@@ -51,6 +51,15 @@ services:
       # The Laravel memorial API's FPM sockets and its FastCGI include.
       - memorial-api-fpm:/run/memorial-api-fpm:ro
       - ./nginx/memorial:/etc/nginx/memorial:ro
+      # The Laravel family-media API (README "Family API on Laravel"): its FPM
+      # sockets, its FastCGI include, and the CloudFront origin-secret map dir
+      # (outside git, root 0700 / 0600). All three are mounted before any vhost
+      # uses them, so the vhost switch and its revert are a reload, not a
+      # recreate. Docker creates the secret dir empty if it is missing; nothing
+      # includes it until the vhost switch.
+      - family-api-fpm:/run/family-api-fpm:ro
+      - ./nginx/family:/etc/nginx/family:ro
+      - /opt/secrets/family-media-origin:/etc/nginx/family-secrets:ro
       - zenvora-admin-sock:/run/zenvora-admin:ro
       # The Day and You API origin behind CloudFront (README "Day and You API
       # origin"): the FPM socket, the FastCGI include, and the origin-secret
@@ -295,6 +304,61 @@ services:
     healthcheck:
       disable: true
     mem_limit: 96m
+  # The family-media API ported to Laravel (ZenvoraAI/family-media-api), running
+  # next to the Express `api` above until nginx is switched to it (README
+  # "Family API on Laravel"). Same database; Express keeps running on its own
+  # socket as the rollback until it is retired. Deployed only by
+  # scripts/deploy-family-api-laravel.sh (FAMILY_API_LARAVEL_TAG). No scheduler
+  # container (owner decision D1): the sweeps run from the host crontab through
+  # `docker compose exec -T family-api-laravel php artisan ...`.
+  family-api-laravel:
+    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/family-media-api-laravel:${FAMILY_API_LARAVEL_TAG:?FAMILY_API_LARAVEL_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
+    container_name: homelab-family-api-laravel
+    # Postgres listens on the host, as for the Express service.
+    network_mode: host
+    restart: unless-stopped
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+    # Non-root image (USER www-data); see README "Container hardening".
+    cap_drop:
+      - ALL
+    # Exactly as family-media-api's docker-compose.test.yml runs it
+    # (scripts/docker-smoke.sh: "root filesystem is read-only"). FPM writes its
+    # sockets (the volume) and /tmp, where the Node pixel job puts an upload
+    # and its renditions: a 50 MB photo plus derivatives does not fit the
+    # smoke stack's 64m (family-media-api phase-3 report). One pixel job per
+    # container at a time (the app's container-wide lock), so one job dir.
+    # tmpfs pages count against mem_limit.
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    # Its own file, not Express's .env (APP_KEY and the rotated JWT_SECRET are
+    # Laravel's alone). Every setting and secret is in it; none is forwarded
+    # from a shell (a bare name in environment: would override the file with
+    # the deploy shell's value). required: false is load-bearing, as for
+    # securevault-api: a missing hard-required env_file fails `docker compose
+    # config` for every product's deploy; BootGuard refuses to boot without
+    # the config, so a missing file fails loudly on this service only.
+    env_file:
+      - path: /opt/secrets/family-media/api-laravel.env
+        required: false
+    # FastCGI has no authentication and loopback is shared by every
+    # host-network service, so FPM listens only on unix sockets (fpm.sock, and
+    # fpm-auth.sock for the argon2 routes) in this volume. Only this service and
+    # nginx (read-only) mount it (tests/verify-family-api-laravel.sh).
+    volumes:
+      - family-api-fpm:/run/family-api-fpm
+    # The limit the image's smoke test runs under (docker-compose.test.yml).
+    # Not memorial's 256m: besides FPM (idle ~79 MiB in the smoke run; main
+    # pool up to 3 workers, auth 1 with argon2id's 64 MiB) this container runs
+    # the sharp/ONNX work Express did in-process, as one Node child at a time
+    # with a 384 MB V8 heap cap plus libvips' native memory, and the /tmp tmpfs
+    # (up to ~60 MB for a 50 MB photo). Rough peak during an upload or face
+    # sweep: 79 + ~250 (Node) + ~60 (tmpfs) + ~100 (two busy workers, argon2)
+    # = ~490 MiB. Measure a face sweep and a large upload with docker stats
+    # and lower it from the real peak (README "Memory budget").
+    mem_limit: 512m
   # CONTAINERS=1 permits the whole /containers/* GET surface in this proxy image
   # (list/inspect, but also logs/top/export/archive across all containers on
   # the host) -- there is no finer-grained flag in tecnativa/docker-socket-proxy.
@@ -457,6 +521,8 @@ volumes:
   zenvora-admin-sock: {}
   # The Laravel memorial API's PHP-FPM sockets; see memorial-api-laravel.
   memorial-api-fpm: {}
+  # The Laravel family-media API's PHP-FPM sockets; see family-api-laravel.
+  family-api-fpm: {}
   # Day and You API staging's PHP-FPM sockets; see dayandyou-api-staging.
   dayandyou-api-fpm-staging: {}
 

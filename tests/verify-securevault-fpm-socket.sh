@@ -52,10 +52,11 @@ grep -E '^[[:space:]]*set \$securevault_fpm ' "$NGINX" | grep -vq 'unix:' \
   && fail "valtou-api.conf sets \$securevault_fpm to a TCP address"
 # The includes pass $securevault_fpm, $dayandyou_api_fpm (the Day and You API's
 # FPM, same reasoning; tests/verify-dayandyou-api-origin.sh) or $memorial_api_fpm
-# (the Laravel memorial API; tests/verify-memorial-api-laravel.sh); any other fastcgi_pass
+# (the Laravel memorial API; tests/verify-memorial-api-laravel.sh) or $family_api_fpm (the
+# Laravel family-media API; tests/verify-family-api-laravel.sh); any other fastcgi_pass
 # target (localhost:9000, [::1]:9000, an upstream name) would be TCP.
-grep -rhE '^[[:space:]]*fastcgi_pass[[:space:]]' "$ROOT/nginx" | grep -vqE '^[[:space:]]*fastcgi_pass[[:space:]]+(\$securevault_fpm|\$dayandyou_api_fpm|\$memorial_api_fpm|unix:/run/securevault-fpm/fpm\.sock);' \
-  && fail "a fastcgi_pass points somewhere other than \$securevault_fpm / \$dayandyou_api_fpm / \$memorial_api_fpm (unix sockets)"
+grep -rhE '^[[:space:]]*fastcgi_pass[[:space:]]' "$ROOT/nginx" | grep -vqE '^[[:space:]]*fastcgi_pass[[:space:]]+(\$securevault_fpm|\$dayandyou_api_fpm|\$memorial_api_fpm|\$family_api_fpm|unix:/run/securevault-fpm/fpm\.sock);' \
+  && fail "a fastcgi_pass points somewhere other than \$securevault_fpm / \$dayandyou_api_fpm / \$memorial_api_fpm / \$family_api_fpm (unix sockets)"
 grep -rhE '^[[:space:]]*set[[:space:]]+\$dayandyou_api_fpm[[:space:]]' "$ROOT/nginx" \
   | grep -vqE '^[[:space:]]*set[[:space:]]+\$dayandyou_api_fpm[[:space:]]+unix:\$dayandyou_api_sock_dir/fpm(-payments)?\.sock;' \
   && fail "\$dayandyou_api_fpm must be one of the API's unix sockets under \$dayandyou_api_sock_dir"

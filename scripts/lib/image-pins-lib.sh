@@ -40,10 +40,14 @@ PINS_COMPOSE_MODE=strict
 # DAYANDYOU_API_STAGING_TAG the same way (the Day and You API's deploy).
 # memorial-api-laravel and memorial-api-laravel-scheduler share
 # MEMORIAL_API_LARAVEL_TAG the same way (scripts/deploy-memorial-api-laravel.sh).
+# family-api-laravel is the Laravel family-media API, a separate image and pin
+# from the Express api's FAMILY_API_TAG, so re-pinning either is unambiguous
+# (scripts/deploy-family-api-laravel.sh).
 pins_table() {
   cat <<'TABLE'
 nginx|homelab-nginx|NGINX_IMAGE|image||nginx:1.30.6-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
 api|homelab-family-api|FAMILY_API_TAG|tag|family-media-api|latest
+family-api-laravel|homelab-family-api-laravel|FAMILY_API_LARAVEL_TAG|tag|family-media-api-laravel|latest
 securevault-api|homelab-securevault-api|SECUREVAULT_API_TAG|tag|securevault-api-laravel|latest
 securevault-scheduler|homelab-securevault-scheduler|SECUREVAULT_API_TAG|tag|securevault-api-laravel|latest
 dayandyou-api-staging|homelab-dayandyou-api-staging|DAYANDYOU_API_STAGING_TAG|tag|dayandyou-api|staging

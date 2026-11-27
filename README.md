@@ -13,6 +13,7 @@ release workflows remain in their own repositories.
 | --- | --- | ---: | --- | ---: |
 | `nginx` | `homelab-nginx` | 80 / 443 | all hosts below | 64m |
 | `api` | `homelab-family-api` | none (HTTP on a unix socket, `family-api-sock` volume) | `family-api.valtou.com` | 640m |
+| `family-api-laravel` | `homelab-family-api-laravel` | none (FastCGI on unix sockets, `family-api-fpm` volume) | none yet; `family-api.valtou.com` `/api/` once switched (CloudFront origin only, see "Family API on Laravel") | 512m |
 | `securevault-api` | `homelab-securevault-api` | none (FastCGI on a unix socket, `securevault-fpm` volume) | `api.valtou.com` | 512m |
 | `securevault-scheduler` | `homelab-securevault-scheduler` | — | none (no listener) | 256m |
 | `dayandyou-api-staging` | `homelab-dayandyou-api-staging` | none (FastCGI on unix sockets, `dayandyou-api-fpm-staging` volume) | `api-origin-staging.dayandyou.com` (CloudFront origin only) | 320m |
@@ -55,8 +56,9 @@ alias of `docker-api-filter`, not a
 loopback address. The application ports must remain firewalled from the
 public internet. Docker nginx is the only public reverse proxy.
 
-Those limits sum to 2288 MiB on a host measured at 1.9 GiB, so the box is
-deliberately oversubscribed by roughly 15%. A `mem_limit` is a ceiling, not a
+Those limits sum to 2960 MiB on a host measured at 1.9 GiB while both family
+APIs are defined (2448 MiB before `family-api-laravel`; 2320 MiB once the
+Express `api` is retired), so the box is deliberately oversubscribed. A `mem_limit` is a ceiling, not a
 reservation, and no service sits near its own ceiling — but the arithmetic means
 several services peaking together is an OOM, not a slowdown. Check
 `docker stats --no-stream` before raising any limit, and treat the total as the
@@ -99,7 +101,8 @@ oversubscribed OOM puts at risk.
 | dayandyou-api-staging | 320m | not measured (main pool 2 + payments pool 1-2) | re-measure once the API's argon2 gate lands |
 | dayandyou-api-scheduler-staging | 128m | 93 MiB peak, measured locally | keep |
 | nginx / filter / proxy / zenvora-admin | 64m / 16m / 16m / 128m | small | keep |
-| **Total** | **2288 MiB** (compose limits, 2026-11-19, after the memorial worker's 512 MiB left) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
+| family-api-laravel | 512m | ~79 MiB idle (image smoke test); peak not measured | measure a face sweep and a 50 MB upload; set ~1.5x peak |
+| **Total** | **2960 MiB** (compose limits, 2026-11-28, with family-api-laravel; 2320 MiB once the Express api's 640m is retired) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
 
 To gather the evidence (host, read-only, run over a normal week including a
 deploy and a photo upload):
@@ -365,10 +368,13 @@ file on disk breaks nothing. Validate, then recreate.
 | `docker-prune.sh` | Keeps, per service, the image `.env` pins plus the newest `IMAGE_KEEP_GOOD` (default 3) known-good releases from `.image-pins/`. Removes every other image of the repositories it manages, plus dangling layers. That is the rollback window. It removes nothing while any service is unpinned or any current pin does not resolve to a local image, runs under the pins lock, never touches other repositories, exits non-zero if a repository cannot be listed, and `DRY_RUN=1` previews. Meant to replace each product's age-based `docker image prune -af --filter until=48h`, which deletes other products' previous releases; no product calls it yet (Rollout step 4). |
 | `image-pins.sh` | `seed`, `check`, `get`, `promote`, `rollback <svc> <bad sha>`: the only writer of the pinned image values (see Images and tags). A lock left by a killed run is cleared automatically. |
 | `refresh-dayandyou-api-secrets.sh <staging\|prod>` | Writes the Day and You Laravel API's whole env file, `/opt/secrets/dayandyou-api/<env>.env`, from SSM `/dayandyou-api/<env>/*` (profile `dayandyou-api-ssm`). Refuses a missing required key, an unknown extra one, a prod `SITE_PASSWORD`, a partial `FRONTEND_REBUILD_*` set, or a value of the wrong shape (test vs live Stripe key, `APP_KEY`, URLs, minimum lengths, line breaks or single quotes). Values are written `KEY='value'`, which Compose's `env_file` takes literally. Run by the API deploy on every staging deploy (`sudo -n`), creates the file on first run. |
+| `refresh-family-media-secrets.sh [file]` | Pulls the family-media handoff key id and private key from SSM `/family-media/prod/*` into the Express API's `/opt/secrets/family-media/.env` (no argument) or the Laravel API's `api-laravel.env` (the only other path it accepts; the Laravel deploy passes it). |
 | `refresh-memorial-aws-credentials.sh` | Pulls the memorial API's AWS credentials from SSM Parameter Store into its env file (the media worker was retired). |
 | `refresh-securevault-secrets.sh` | Writes SecureVault's whole env file, `/opt/secrets/securevault/api.env`, from SSM `/securevault/prod/*` (profile `securevault-ssm`), deriving `ALLOWED_EXTENSION_ORIGINS` from `EXTENSION_IDS`. Refuses a missing required key, an unknown extra one, a partial `GOOGLE_*` set, `PHOTO_S3_*` without `OBJECT_STORE`, or a value of the wrong shape (secret lengths, WebAuthn RP ID and origins, URLs, SMTP port, extension ids, line breaks or single quotes). Written `KEY='value'`. Run by SecureVault's deploy on every backend deploy (`sudo -n`); creates the file on first run. |
 | `refresh-memorial-secrets.sh` | Pulls the CloudFront media signing key pair and the family-media handoff settings from SSM into the memorial API env file, and writes the constant `MEMORIAL_HANDOFF_TENANT=aiqiuqi`. |
 | `refresh-memorial-laravel-secrets.sh` | Writes the Laravel memorial API's `APP_KEY` (SSM `/aiqiuqi-memorial/preview/APP_KEY`) into the same api.env; refuses anything but `base64:` + 32 bytes. Run only by the Laravel deploy, so the Express deploys never depend on that parameter. |
+| `family-deploy-gate.sh` | The forced command of the family-media-api deploy key, installed as `/usr/local/sbin/family-deploy-gate` (see "Family API on Laravel"). Allows only `deploy-family-api-laravel <release sha> <homelab sha>`, and only when the homelab sha is origin/main's tip; fast-forwards to it and hands over to the next script. |
+| `deploy-family-api-laravel.sh` | The Laravel family-media deploy on the host: handoff secrets into `api-laravel.env`, env-file shape, pull, preflight, pre-migration dump (`/opt/backups`, 14 days), migration, swap, readiness of both FPM pools, pin, image cleanup. Rolls an unready release back to the pinned one. |
 | `memorial-deploy-gate.sh` | The forced command of the memorial-api deploy key, installed as `/usr/local/sbin/memorial-deploy-gate` (see "Memorial API on Laravel"). Allows only `deploy-memorial-api-laravel <release sha> <homelab sha>`, and only when the homelab sha is origin/main's tip; fast-forwards to it and hands over to the next script. |
 | `deploy-memorial-api-laravel.sh` | The Laravel memorial deploy on the host: secrets, env-file shape, pull, preflight, pre-migration dump, migration, swap of both services, readiness of both FPM pools, pin, prune. Rolls an unready release back to the previous one. |
 | `refresh-zenvora-admin-secrets.sh` | Pulls zenvora-admin's 14 secrets from SSM into its env file: GitHub App credentials, SES SMTP credentials, token-encryption key, whitelisted user ID, plus three tokens for external read-only APIs (a fine-grained GitHub alert-check PAT covering all ZenvoraAI-owned tracked repos, a classic PAT for GHCR package listing since neither GitHub Apps nor fine-grained PATs expose an org-level Packages permission, and a Cloudflare API token scoped to the three onboarded zones for the traffic/security-events panel). Same pattern as the memorial scripts, for the same reason. |
@@ -405,6 +411,10 @@ bash tests/verify-memorial-laravel-secret-refresh.sh  # only a 32-byte APP_KEY i
 bash tests/verify-memorial-api-laravel.sh    # Laravel memorial FPM only over its socket volume; client IP only from $remote_addr
 bash tests/verify-memorial-laravel-deploy.sh  # nothing swapped before preflight+dump+migrate; unready release rolled back, never pinned
 bash tests/verify-memorial-deploy-gate.sh    # the deploy key runs one command, from the approved homelab main tip only
+bash tests/verify-family-api-laravel.sh      # Laravel family FPM only over its socket volume, no scheduler; client IP only from $family_client_ip
+bash tests/verify-family-laravel-deploy.sh   # nothing swapped before preflight+dump+migrate; unready release rolled back, never pinned
+bash tests/verify-family-deploy-gate.sh      # the family deploy key runs one command, from the approved homelab main tip only
+bash tests/verify-family-media-secret-refresh.sh  # the handoff refresh writes only .env or api-laravel.env
 bash tests/verify-zenvora-admin-secret-refresh.sh  # rotation accepts short non-secrets, still refuses short secrets
 bash tests/verify-dayandyou-api-secret-refresh.sh  # exact KEY='value' file, every shape rule refuses, no value echoed
 bash tests/verify-securevault-secret-refresh.sh  # same for SecureVault, plus derived extension origins
@@ -731,6 +741,69 @@ nginx`, a second of downtime for every site). It was recreated on 2026-11-22,
 when nginx was switched to the Laravel API,
 not before the first deploy.
 
+## Family API on Laravel
+
+`family-api-laravel` (PHP-FPM, two pools: main and a one-worker argon2 `auth`
+pool) runs the family-media API ported to Laravel (ZenvoraAI/family-media-api)
+next to the Express `api`, on the same database. Express keeps running on its
+socket as the rollback until it is retired. The ordered cutover, with a
+rollback per step, is `docs/family-api-laravel-cutover.md`.
+
+**No scheduler container** (owner decision D1). The Laravel console has no
+`Schedule::` entries; the sweeps run from the host crontab with
+`docker compose exec -T family-api-laravel php artisan ...` (see "Family
+sweeps (host cron)" below). Do not add a scheduler service: the sweeps would
+run twice (`tests/verify-family-api-laravel.sh` refuses one).
+
+**Env file.** `/opt/secrets/family-media/api-laravel.env`, `ubuntu` `0600`,
+Laravel's own (not Express's `.env`: `APP_KEY` and the rotated `JWT_SECRET`
+are Laravel's alone). `env_file` with `required: false`, so a missing file
+breaks only this service: the image's BootGuard and `family:preflight` refuse
+to start without their config, an unreachable database or a bad handoff key.
+The key list is in the cutover runbook. The deploy refreshes
+`FM_HANDOFF_KEY_ID` / `FM_HANDOFF_PRIVATE_KEY_PEM` into it from SSM
+(`scripts/refresh-family-media-secrets.sh <file>`); the PEM must be one line
+with literal `\n` (the deploy's shape check refuses a multi-line value,
+printing line numbers only).
+
+**Deploys** come only from family-media-api's `deploy.yml`, through a deploy
+key that can do one thing, exactly as the memorial API's (see "Memorial API on
+Laravel" for the reasoning and the gate's limits, which apply here too). The
+key's `authorized_keys` line for `ubuntu` (the public half of family-media-api's
+deploy secret):
+
+```
+restrict,command="/usr/local/sbin/family-deploy-gate" ssh-ed25519 AAAA… family-media-api-deploy
+```
+
+and the gate itself, from a reviewed commit of this repository (re-install it
+whenever `scripts/family-deploy-gate.sh` changes; the copy in the checkout is
+never run):
+
+```bash
+sudo install -o root -g root -m 0755 scripts/family-deploy-gate.sh /usr/local/sbin/family-deploy-gate
+```
+
+The gate runs `scripts/deploy-family-api-laravel.sh <release sha>` detached,
+with its log in `~ubuntu/family-deploy-logs/` (newest 20). Its lock
+(`/run/lock/family-deploy.lock`) is not the memorial gate's: do not dispatch a
+family and a memorial deploy at the same moment, both fast-forward this
+checkout.
+
+**First deploy.** `FAMILY_API_LARAVEL_TAG` must be pinned before the commit
+that adds the service reaches `main` (strict pins: an unset variable stops
+every compose command, for every product). Same procedure as the memorial
+API's first deploy, with `family-media-api-laravel:<S>` and
+`image-pins.sh promote family-api-laravel <S>`. A first deploy that fails
+readiness stops the service; nginx does not depend on it until the switch.
+
+**nginx** mounts `family-api-fpm`, `nginx/family/` and the origin-secret
+directory `/opt/secrets/family-media-origin` read-only. A running nginx sees
+none of them until it is recreated (`docker compose up -d --no-deps
+--force-recreate nginx`, a second of downtime for every site), which is due
+after this change and before the switch, so the switch and its revert are a
+reload.
+
 ## Container hardening
 
 Applied only where the product's Dockerfile and runtime code (origin/main,
@@ -741,6 +814,7 @@ Applied only where the product's Dockerfile and runtime code (origin/main,
 | api (family-media) | yes | yes | no | `USER node`, CMD `node`. Writes local storage (`lib/storage/local.ts`) and `os.tmpdir()` (video posters); which paths are live in prod is in the host env file, not verifiable here |
 | securevault-api, securevault-scheduler | yes | yes | no | `USER www-data`. Not verified on a read-only root: the deploy runs artisan one-offs (preflight, migrate) in this service's config, and Laravel writes `storage/` and `bootstrap/cache` |
 | dayandyou-api-staging, dayandyou-api-scheduler-staging | yes | yes | no | `USER www-data` (day-and-you-api Dockerfile), as securevault-api. Laravel writes `storage/` and `bootstrap/cache`; a read-only root with tmpfs is not verified yet |
+| family-api-laravel | yes | yes | **yes**, `/tmp` tmpfs 128m | `USER www-data`; run read-only by family-media-api `scripts/docker-smoke.sh`; writes only its socket volume and `/tmp` (the Node pixel jobs' upload and renditions); migrations run as a one-off before the swap |
 | memorial-api | yes | yes | **yes**, `/tmp` tmpfs 16m | `USER node`; `apps/api/src` only reads files; migrations run outside the container; Prisma 7 has no engine binary |
 | zenvora-admin | yes | yes | no | `USER bun`; writes only `/app/data` (volume), but Bun's runtime cache behaviour on a read-only root was not verified |
 | nginx, docker-api-filter, docker-socket-proxy | yes | no | no | start as root (worker user switch, socket access); capability needs not verifiable without running the images |
