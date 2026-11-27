@@ -804,6 +804,45 @@ none of them until it is recreated (`docker compose up -d --no-deps
 after this change and before the switch, so the switch and its revert are a
 reload.
 
+### Family sweeps (host cron)
+
+The family-media sweeps (visibility repair, stranded backup claims, orphan
+upload intents, offsite backups, audit retention, expired refresh tokens,
+trash retention, pending offsite deletes; then face embeddings and face
+clustering) are artisan commands of the Laravel API, run in the live
+`family-api-laravel` container from `ubuntu`'s crontab. Nothing in this
+repository schedules them and no container runs a schedule, so they run
+exactly once. The crontab itself is family-media's `infra/crontab.txt`
+(reviewed at family-media `37d0bd90`); install that file, do not retype it:
+
+| Time (host) | Command (from `/opt/homelab-infra`) | Guard | Log |
+| --- | --- | --- | --- |
+| `0 4,12,20 * * *` | `docker compose exec -T family-api-laravel php artisan family:sweep` | none (steps are leased) | `/var/log/family-sweep.log` |
+| `20 4,12,20 * * *` | `... php artisan family:sweep-face-embeddings` (batch 50, the default) | `flock -n /tmp/family-sweep-face.lock` | `/var/log/family-sweep-face.log` |
+| `40 4,12,20 * * *` | `... php artisan family:sweep-face-clustering` (batch 100) | `flock -n /tmp/family-sweep-cluster.lock` | `/var/log/family-sweep-cluster.log` |
+
+The Express crontab (`node dist/scripts/sweep*.js` in the `api` container) was
+never installed on this host (family-media jobs-inventory: face scans stopped
+2026-09-17, offsite backups never ran), so there is nothing to remove; check
+anyway. Install after the first Laravel deploy is ready (the jobs `exec` into
+the running container; with it stopped they fail into their logs):
+
+```bash
+crontab -l 2>/dev/null | grep -nE 'sweep|family' || echo "no family/sweep entries"   # expect none
+for f in family-sweep family-sweep-face family-sweep-cluster; do
+  sudo touch /var/log/$f.log && sudo chown ubuntu:ubuntu /var/log/$f.log && sudo chmod 0640 /var/log/$f.log
+done
+# crontab.txt copied from a reviewed family-media commit (37d0bd90 or later on main)
+{ crontab -l 2>/dev/null; cat crontab.txt; } | crontab -
+crontab -l | grep -c 'family-api-laravel php artisan family:sweep'                  # 3
+cd /opt/homelab-infra && docker compose exec -T family-api-laravel php artisan family:sweep; echo "exit $?"   # one run by hand; 0
+```
+
+Each command exits 1 when any step failed; the log files are the only trace,
+so read them after the first scheduled run. They are not rotated yet (a
+`logrotate` rule is an open item). Rollback: `crontab -e` and delete the three
+lines; nothing else depends on them.
+
 ## Container hardening
 
 Applied only where the product's Dockerfile and runtime code (origin/main,
