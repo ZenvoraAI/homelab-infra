@@ -1448,7 +1448,11 @@ fail. Once nginx runs without `dayandyou.conf`, delete those lineages
 `sudo certbot delete --cert-name <name>`). `api-origin-staging.dayandyou.com`
 is a separate lineage and stays.
 
-Do not use `certbot --nginx`: the host nginx service is intentionally stopped.
+Do not use `certbot --nginx`: the host nginx service is intentionally stopped and, since
+2026-11-28, disabled (`systemctl disable nginx`). Its leftover `/etc/nginx` config still names
+the certificate of `api.family.valtou.com` (retired 2026-11-01), so it fails its config test at
+boot; the reboot that day showed it as a failed unit. Keep it disabled: if it ever started at boot,
+it would race the nginx container for ports 80/443.
 Do not repeat the migration's `certbot certonly --force-renewal` commands during
 normal maintenance.
 
