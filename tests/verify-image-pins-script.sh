@@ -124,12 +124,12 @@ chmod 640 "$IMAGE_PINS_ENV_FILE"
 mode="$(stat -c %a "$IMAGE_PINS_ENV_FILE" 2>/dev/null || stat -f %Lp "$IMAGE_PINS_ENV_FILE")"
 [ "$mode" = 640 ] || fail "promote changed .env's mode to $mode (compose run as another user could no longer read it)"
 "$PINS" rollback dayandyou-api-staging "$SHA2" >/dev/null
-echo "export FAMILY_API_TAG=$SHA3@$(dg 3)" >>"$IMAGE_PINS_ENV_FILE"
-[ "$("$PINS" get api)" = "$SHA3@$(dg 3)" ] || fail "get ignores an 'export VAR=' line, which compose reads"
-echo "$REPO@$(dg 3)" >"$FIX/digests/$(key "ghcr.io/zenvoraai/family-media-api:$SHA2")"
-"$PINS" promote api "$SHA2" >/dev/null 2>&1
-[ "$(grep -c 'FAMILY_API_TAG=' "$IMAGE_PINS_ENV_FILE")" = 1 ] || fail "promote left a second FAMILY_API_TAG line:\n$(cat "$IMAGE_PINS_ENV_FILE")"
-sed -i.bak '/FAMILY_API_TAG=/d' "$IMAGE_PINS_ENV_FILE"; rm -f "$IMAGE_PINS_ENV_FILE.bak" "$IMAGE_PINS_STATE_DIR/FAMILY_API_TAG.history"
+echo "export FAMILY_API_LARAVEL_TAG=$SHA3@$(dg 3)" >>"$IMAGE_PINS_ENV_FILE"
+[ "$("$PINS" get family-api-laravel)" = "$SHA3@$(dg 3)" ] || fail "get ignores an 'export VAR=' line, which compose reads"
+echo "$REPO@$(dg 3)" >"$FIX/digests/$(key "ghcr.io/zenvoraai/family-media-api-laravel:$SHA2")"
+"$PINS" promote family-api-laravel "$SHA2" >/dev/null 2>&1
+[ "$(grep -c 'FAMILY_API_LARAVEL_TAG=' "$IMAGE_PINS_ENV_FILE")" = 1 ] || fail "promote left a second FAMILY_API_LARAVEL_TAG line:\n$(cat "$IMAGE_PINS_ENV_FILE")"
+sed -i.bak '/FAMILY_API_LARAVEL_TAG=/d' "$IMAGE_PINS_ENV_FILE"; rm -f "$IMAGE_PINS_ENV_FILE.bak" "$IMAGE_PINS_STATE_DIR/FAMILY_API_LARAVEL_TAG.history"
 
 # --- a value whose digest cannot be resolved is pinned, but not silently ---------
 "$PINS" promote memorial-api-laravel "$SHA3" >/dev/null 2>"$TMP/nodigest.err" || fail "promote of a bare SHA failed"
@@ -144,12 +144,11 @@ seed_container() {  # name config-image image-id repo-digest-lines
 seed_container homelab-nginx nginx:1.27-alpine sha256:img-nginx "nginx@$(dg 20)"
 seed_container homelab-docker-api-filter nginx:1.27-alpine sha256:img-nginx "nginx@$(dg 20)"
 seed_container homelab-docker-socket-proxy tecnativa/docker-socket-proxy:0.3 sha256:img-dsp "tecnativa/docker-socket-proxy@$(dg 21)"
-seed_container homelab-family-api "ghcr.io/zenvoraai/family-media-api:$SHA3" sha256:img-fam "ghcr.io/zenvoraai/family-media-api@$(dg 22)"
 seed_container homelab-securevault-api ghcr.io/zenvoraai/securevault-api-laravel:latest sha256:img-sv "ghcr.io/zenvoraai/securevault-api-laravel@$(dg 23)"
 # Already pinned by promote above; seed must not replace it with :staging.
 seed_container homelab-dayandyou-api-staging "$REPO:staging" sha256:img-dyas "$REPO@$(dg 28)"
 seed_container homelab-dayandyou-api-scheduler-staging "$REPO:staging" sha256:img-dyas "$REPO@$(dg 28)"
-seed_container homelab-family-api-laravel "ghcr.io/zenvoraai/family-media-api-laravel:$SHA3" sha256:img-fal "ghcr.io/zenvoraai/family-media-api-laravel@$(dg 29)"
+seed_container homelab-family-api-laravel "ghcr.io/zenvoraai/family-media-api-laravel:$SHA3" sha256:img-fal "ghcr.io/zenvoraai/family-media-api-laravel@$(dg 22)"
 seed_container homelab-memorial-api-laravel "ghcr.io/zenvoraai/memorial-api:$SHA3" sha256:img-mal "ghcr.io/zenvoraai/memorial-api@$(dg 26)"
 # Running from the pre-transfer namespace: must not be pinned against zenvoraai.
 seed_container homelab-zenvora-admin ghcr.io/qclawchang/zenvora-admin:latest sha256:img-za "ghcr.io/qclawchang/zenvora-admin@$(dg 27)"
@@ -158,7 +157,7 @@ if "$PINS" seed >/dev/null 2>"$TMP/seed.err"; then fail "seed succeeded although
 grep -q 'homelab-zenvora-admin runs ghcr.io/qclawchang' "$TMP/seed.err" || fail "seed did not explain the foreign repo:\n$(cat "$TMP/seed.err")"
 [ "$(env_value DAYANDYOU_API_STAGING_TAG)" = "$SHA1@$(dg 1)" ] || fail "seed overwrote an existing pin"
 [ "$(grep -c '^DAYANDYOU_API_STAGING_TAG=' "$IMAGE_PINS_ENV_FILE")" = 1 ] || fail "seed wrote a second DAYANDYOU_API_STAGING_TAG line for the scheduler"
-[ "$(env_value FAMILY_API_TAG)" = "$SHA3@$(dg 22)" ] || fail "a commit-SHA tag seeded as $(env_value FAMILY_API_TAG)"
+[ "$(env_value FAMILY_API_LARAVEL_TAG)" = "$SHA3@$(dg 22)" ] || fail "a commit-SHA tag seeded as $(env_value FAMILY_API_LARAVEL_TAG)"
 [ "$(env_value SECUREVAULT_API_TAG)" = "latest@$(dg 23)" ] || fail ":latest must be seeded with its digest"
 [ "$(env_value NGINX_IMAGE)" = "nginx:1.27-alpine@$(dg 20)" ] || fail "nginx seeded as $(env_value NGINX_IMAGE)"
 [ "$(env_value DOCKER_SOCKET_PROXY_IMAGE)" = "tecnativa/docker-socket-proxy:0.3@$(dg 21)" ] || fail "proxy seeded as $(env_value DOCKER_SOCKET_PROXY_IMAGE)"

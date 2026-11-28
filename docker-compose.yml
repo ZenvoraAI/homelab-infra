@@ -47,7 +47,6 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/securevault:/etc/nginx/securevault:ro
       - securevault-fpm:/run/securevault-fpm:ro
-      - family-api-sock:/run/family-api:ro
       # The Laravel memorial API's FPM sockets and its FastCGI include.
       - memorial-api-fpm:/run/memorial-api-fpm:ro
       - ./nginx/memorial:/etc/nginx/memorial:ro
@@ -71,33 +70,6 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/lib/homelab-acme:/var/www/certbot:ro
     mem_limit: 64m
-  api:
-    image: ghcr.io/${GHCR_OWNER:-zenvoraai}/family-media-api:${FAMILY_API_TAG:?FAMILY_API_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
-    container_name: homelab-family-api
-    network_mode: host
-    restart: unless-stopped
-    logging: *default-logging
-    security_opt:
-      - no-new-privileges:true
-    # Non-root image (USER node/bun); see README "Container hardening".
-    cap_drop:
-      - ALL
-    # HTTP on a unix socket, not 127.0.0.1:4000: loopback is shared by every
-    # host-network service, and a co-tenant reaching the API directly would skip
-    # nginx's limit_req and forge the client-IP headers behind the login lockout.
-    # Only this service and nginx (read-only) may mount family-api-sock
-    # (tests/verify-family-api-socket.sh).
-    environment:
-      - LISTEN_SOCKET=/run/family-api/http.sock
-      # glibc otherwise grows a malloc arena per thread, and sharp/libvips'
-      # worker threads leave them fragmented: RSS climbed to ~380 MB, 344 MB of
-      # it anonymous, within hours of a restart (2026-11-13). sharp's docs
-      # recommend capping the arenas on glibc.
-      - MALLOC_ARENA_MAX=2
-    volumes:
-      - /opt/secrets/family-media/.env:/app/.env:ro
-      - family-api-sock:/run/family-api
-    mem_limit: 640m
   securevault-api:
     image: ghcr.io/${GHCR_OWNER:-zenvoraai}/securevault-api-laravel:${SECUREVAULT_API_TAG:?SECUREVAULT_API_TAG unset -- set by scripts/image-pins.sh, see README Images and tags}
     container_name: homelab-securevault-api
@@ -304,10 +276,11 @@ services:
     healthcheck:
       disable: true
     mem_limit: 96m
-  # The family-media API ported to Laravel (ZenvoraAI/family-media-api), running
-  # next to the Express `api` above until nginx is switched to it (README
-  # "Family API on Laravel"). Same database; Express keeps running on its own
-  # socket as the rollback until it is retired. Deployed only by
+  # The family-media API, ported to Laravel (ZenvoraAI/family-media-api) and now
+  # the only one: nginx serves family-api.valtou.com /api/ from it for the web
+  # distribution's CloudFront /api/* behaviour (README "Family API on Laravel").
+  # The Express `api` that ran here before was retired at the cutover; its
+  # database and S3 media are untouched and now served by this API. Deployed only by
   # scripts/deploy-family-api-laravel.sh (FAMILY_API_LARAVEL_TAG). No scheduler
   # container (owner decision D1): the sweeps run from the host crontab through
   # `docker compose exec -T family-api-laravel php artisan ...`.
@@ -516,8 +489,7 @@ services:
 volumes:
   # SecureVault's PHP-FPM socket; see securevault-api.
   securevault-fpm: {}
-  # The apps' HTTP sockets; see api, memorial-api and zenvora-admin.
-  family-api-sock: {}
+  # The apps' HTTP sockets; see zenvora-admin.
   zenvora-admin-sock: {}
   # The Laravel memorial API's PHP-FPM sockets; see memorial-api-laravel.
   memorial-api-fpm: {}

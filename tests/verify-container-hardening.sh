@@ -32,7 +32,7 @@ COMPOSE="$COMPOSE" ruby -ryaml -e '
   doc = YAML.load(File.read(ENV.fetch("COMPOSE")))  # system ruby 2.6: aliases allowed by default
   services = doc.fetch("services")
   errors = []
-  non_root_apps = %w[api securevault-api securevault-scheduler dayandyou-api-staging dayandyou-api-scheduler-staging memorial-api-laravel memorial-api-laravel-scheduler family-api-laravel zenvora-admin]
+  non_root_apps = %w[securevault-api securevault-scheduler dayandyou-api-staging dayandyou-api-scheduler-staging memorial-api-laravel memorial-api-laravel-scheduler family-api-laravel zenvora-admin]
   read_only = { "memorial-api-laravel" => "/tmp", "memorial-api-laravel-scheduler" => "/tmp", "family-api-laravel" => "/tmp" }
 
   errors << "parsed only #{services.size} services" if services.size < 10

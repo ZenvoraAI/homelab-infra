@@ -12,7 +12,6 @@ release workflows remain in their own repositories.
 | Compose service | Container | Host port | Public hostnames | `mem_limit` |
 | --- | --- | ---: | --- | ---: |
 | `nginx` | `homelab-nginx` | 80 / 443 | all hosts below | 64m |
-| `api` | `homelab-family-api` | none (HTTP on a unix socket, `family-api-sock` volume) | none since the Laravel switch | 640m |
 | `family-api-laravel` | `homelab-family-api-laravel` | none (FastCGI on unix sockets, `family-api-fpm` volume) | `family-api.valtou.com` `/api/` (CloudFront origin only, see "Family API on Laravel") | 512m |
 | `securevault-api` | `homelab-securevault-api` | none (FastCGI on a unix socket, `securevault-fpm` volume) | `api.valtou.com` | 512m |
 | `securevault-scheduler` | `homelab-securevault-scheduler` | — | none (no listener) | 256m |
@@ -56,9 +55,10 @@ alias of `docker-api-filter`, not a
 loopback address. The application ports must remain firewalled from the
 public internet. Docker nginx is the only public reverse proxy.
 
-Those limits sum to 2960 MiB on a host measured at 1.9 GiB while both family
-APIs are defined (2448 MiB before `family-api-laravel`; 2320 MiB once the
-Express `api` is retired), so the box is deliberately oversubscribed. A `mem_limit` is a ceiling, not a
+Those limits sum to 2320 MiB on a host measured at 1.9 GiB (2 GB Lightsail):
+the Express family `api`'s 640m left when it was retired at the Laravel
+cutover, `family-api-laravel` added 512m. The box is deliberately
+oversubscribed by roughly 20%. A `mem_limit` is a ceiling, not a
 reservation, and no service sits near its own ceiling — but the arithmetic means
 several services peaking together is an OOM, not a slowdown. Check
 `docker stats --no-stream` before raising any limit, and treat the total as the
@@ -95,14 +95,13 @@ oversubscribed OOM puts at risk.
 
 | Service | Limit now | Known usage | Proposal |
 | --- | ---: | --- | --- |
-| api (family-media) | 640m | not measured | measure peak during an upload/video poster run; set ~1.5x peak |
 | securevault-api | 512m | 302 MiB peak (Laravel/FPM load test, 6 workers) | keep; FPM's own ceiling (6 x 192M) is above it by design |
 | securevault-scheduler | 256m | not measured | measure after the cutover |
 | dayandyou-api-staging | 320m | not measured (main pool 2 + payments pool 1-2) | re-measure once the API's argon2 gate lands |
 | dayandyou-api-scheduler-staging | 128m | 93 MiB peak, measured locally | keep |
 | nginx / filter / proxy / zenvora-admin | 64m / 16m / 16m / 128m | small | keep |
 | family-api-laravel | 512m | ~79 MiB idle (image smoke test); peak not measured | measure a face sweep and a 50 MB upload; set ~1.5x peak |
-| **Total** | **2960 MiB** (compose limits, 2026-11-28, with family-api-laravel; 2320 MiB once the Express api's 640m is retired) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
+| **Total** | **2320 MiB** (compose limits, 2026-11-28: Express family api retired, family-api-laravel added) | ~660 MB measured | target: total of measured peaks x 1.5, well under 1.9 GiB minus Postgres |
 
 To gather the evidence (host, read-only, run over a normal week including a
 deploy and a photo upload):
@@ -156,7 +155,7 @@ To add a service, pin its variable on the host before merging.
 | `GHCR_OWNER` | GHCR services | namespace, default `zenvoraai` |
 | `NGINX_IMAGE` | `nginx`, `docker-api-filter` | `nginx:<tag>@sha256:<digest>` |
 | `DOCKER_SOCKET_PROXY_IMAGE` | `docker-socket-proxy` | `tecnativa/docker-socket-proxy:<tag>@sha256:<digest>` |
-| `FAMILY_API_TAG` | `api` | tag of `family-media-api` |
+| `FAMILY_API_LARAVEL_TAG` | `family-api-laravel` | tag of `family-media-api-laravel` |
 | `SECUREVAULT_API_TAG` | `securevault-api`, `securevault-scheduler` | tag of `securevault-api-laravel` |
 | `DAYANDYOU_API_STAGING_TAG` | `dayandyou-api-staging`, `dayandyou-api-scheduler-staging` | tag of `dayandyou-api` |
 | `MEMORIAL_API_LARAVEL_TAG` | `memorial-api-laravel`, `memorial-api-laravel-scheduler` | tag of `memorial-api` |
@@ -248,11 +247,11 @@ service:
 ```bash
 cd /opt/homelab-infra
 git pull --ff-only
-export FAMILY_API_TAG=<the sha this run built>   # or the service's own tag var
+export <SERVICE>_TAG=<the sha this run built>   # the service's own tag var
 docker compose pull <service>
 docker compose up -d <service>
 # after the health check passes:
-scripts/image-pins.sh promote <service> "$FAMILY_API_TAG"
+scripts/image-pins.sh promote <service> "$<SERVICE>_TAG"
 scripts/docker-prune.sh || true    # best-effort, see scripts/ below
 ```
 
@@ -277,7 +276,7 @@ docker stats --no-stream
 Health checks on the host:
 
 ```bash
-docker compose exec -T api node dist/probe.js  # family API (unix socket; /health/ready)
+docker compose exec -T family-api-laravel fcgi-probe.sh /api/health/ready  # family API (FastCGI only)
 docker compose exec -T securevault-api /usr/local/share/securevault/docker/fcgi-probe.sh /readyz  # SecureVault API (FastCGI only)
 docker compose exec -T memorial-api-laravel fcgi-probe.sh /health/ready  # memorial API (FastCGI socket)
 docker compose exec -T zenvora-admin bun src/probe.ts  # zenvora-admin (unix socket; /healthz)
@@ -331,9 +330,14 @@ file on disk breaks nothing. Validate, then recreate.
 
 ## Secrets and state
 
-- Family Media persists its API env only at
-  `/opt/secrets/family-media/.env`; Compose mounts it read-only at `/app/.env`.
-  It must be readable by the Compose user and mode `0600`.
+- The family-media API (`family-api-laravel`) reads
+  `/opt/secrets/family-media/api-laravel.env` through `env_file`
+  (`required: false`), `ubuntu` `0600`. The retired Express API's
+  `/opt/secrets/family-media/.env` stays on the host, unused, for a rollback;
+  nothing mounts it.
+- The family API's CloudFront origin secret lives in
+  `/opt/secrets/family-media-origin/origin-secret.map`, mounted read-only into
+  nginx only (see "Family API on Laravel").
 - The memorial API reads `/opt/secrets/aiqiuqi-memorial/api.env` through
   `env_file`. Do not hand-edit it — see `scripts/` below. (The media worker and
   its `worker.env` were retired on 2026-11-19 by aiqiuqi-memorial Part A; a
@@ -746,9 +750,10 @@ not before the first deploy.
 
 `family-api-laravel` (PHP-FPM, two pools: main and a one-worker argon2 `auth`
 pool) runs the family-media API ported to Laravel (ZenvoraAI/family-media-api)
-next to the Express `api`, on the same database. Express keeps running on its
-socket as the rollback until it is retired. The ordered cutover, with a
-rollback per step, is `docs/family-api-laravel-cutover.md`.
+on the `family_media` database. The Express `api` was retired at the cutover
+(service, socket volume and pin removed; its database, S3 media and env file
+untouched). The ordered cutover, with the data checks and the rollback, is
+`docs/family-api-laravel-cutover.md`.
 
 **No scheduler container** (owner decision D1). The Laravel console has no
 `Schedule::` entries; the sweeps run from the host crontab with
@@ -890,7 +895,6 @@ Applied only where the product's Dockerfile and runtime code (origin/main,
 
 | Service | no-new-privileges | cap_drop ALL | read_only | Evidence / why not |
 | --- | --- | --- | --- | --- |
-| api (family-media) | yes | yes | no | `USER node`, CMD `node`. Writes local storage (`lib/storage/local.ts`) and `os.tmpdir()` (video posters); which paths are live in prod is in the host env file, not verifiable here |
 | securevault-api, securevault-scheduler | yes | yes | no | `USER www-data`. Not verified on a read-only root: the deploy runs artisan one-offs (preflight, migrate) in this service's config, and Laravel writes `storage/` and `bootstrap/cache` |
 | dayandyou-api-staging, dayandyou-api-scheduler-staging | yes | yes | no | `USER www-data` (day-and-you-api Dockerfile), as securevault-api. Laravel writes `storage/` and `bootstrap/cache`; a read-only root with tmpfs is not verified yet |
 | family-api-laravel | yes | yes | **yes**, `/tmp` tmpfs 128m | `USER www-data`; run read-only by family-media-api `scripts/docker-smoke.sh`; writes only its socket volume and `/tmp` (the Node pixel jobs' upload and renditions); migrations run as a one-off before the swap |

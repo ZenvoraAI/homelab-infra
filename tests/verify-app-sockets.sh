@@ -23,8 +23,7 @@ NGINX_ROOT="${NGINX_ROOT_UNDER_TEST:-$ROOT/nginx}"
 NGINX_DIR="$NGINX_ROOT/conf.d"
 
 # service volume socket-dir vhost old-port
-APPS="api family-api-sock /run/family-api - 4000
-zenvora-admin zenvora-admin-sock /run/zenvora-admin admin.valtou.com.conf 3100"
+APPS="zenvora-admin zenvora-admin-sock /run/zenvora-admin admin.valtou.com.conf 3100"
 
 fail() { printf 'FAIL: %b\n' "$*" >&2; exit 1; }
 
@@ -75,10 +74,9 @@ done <<< "$APPS"
 [ "$(printf '%s\n' "$lines" | sort)" = "$(printf '%s' "$expected" | sort)" ] \
   || fail "only each app (rw, LISTEN_SOCKET=<dir>/http.sock) and nginx (:ro) may use its socket volume; found:\n$lines"
 
-# Since the Laravel switch family-api.valtou.com proxies nothing: the Express API
-# is reachable only through its socket, from nothing public. (Its old
-# CF-Connecting-IP rule returns with a revert of the switch.)
+# family-api.valtou.com proxies nothing: the family API is Laravel over FastCGI
+# (verify-family-api-origin.sh); the Express API and its socket are retired.
 sed -e 's/[[:space:]]*#.*$//' "$NGINX_DIR/family-api.conf" | grep -qE 'proxy_pass' \
-  && fail "family-api.conf must not proxy to the Express API after the Laravel switch"
+  && fail "family-api.conf must not proxy anywhere (the Express family API is retired)"
 
-echo "PASS: the family and admin apps are reached only over their unix sockets; only each app and nginx mount them"
+echo "PASS: the admin app are reached only over their unix sockets; only each app and nginx mount them"

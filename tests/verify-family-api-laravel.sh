@@ -61,7 +61,7 @@ COMPOSE="$COMPOSE" ruby -ryaml -e '
   # Its own image and pin, distinct from the Express api, so either can be re-pinned alone.
   image = api["image"].to_s
   errors << "family-api-laravel must run ghcr.io/<owner>/family-media-api-laravel pinned by FAMILY_API_LARAVEL_TAG" unless image.include?("/family-media-api-laravel:${FAMILY_API_LARAVEL_TAG:?")
-  errors << "the Express api must keep its own image and pin (the rollback)" unless services.dig("api", "image").to_s.include?("/family-media-api:${FAMILY_API_TAG:?")
+  errors << "the retired Express api must not come back next to it" if services.key?("api")
 
   # D1: no scheduler, no second service on the Laravel image.
   others = services.select { |n, s| n != "family-api-laravel" && s["image"].to_s.include?("family-media-api-laravel") }
