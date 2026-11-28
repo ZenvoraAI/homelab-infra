@@ -870,7 +870,10 @@ docker compose exec -T family-api-laravel php artisan family:sweep; echo "exit $
 # Same counts after; every difference must be explained by the summary line.
 ```
 
-Then install (family-media `infra/crontab.txt`, 37d0bd90 or later on main):
+The mandatory prechecks (today's 02:30 backup present, the trash-purge count
+reviewed, the orphan-intent and face re-scan safety counts at 0) are step 9 of
+`docs/family-api-laravel-cutover.md`. Then install (family-media
+`infra/crontab.txt`, 37d0bd90 or later on main):
 
 ```bash
 for f in family-sweep family-sweep-face family-sweep-cluster; do
