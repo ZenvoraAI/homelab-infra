@@ -44,7 +44,7 @@ reading (not executed).
 1. **CloudFront error responses gone first.** The web distribution's 403/404 custom error
    responses would turn every API 403/404 into the SPA's `index.html` with 200. Order (family-media
    `WEB-PATH-REWRITE.md` / `API-BEHAVIOR.md`): publish `family-web-path-rewrite` → set
-   CustomErrorResponses to 0 → only then, at step 7, add `/api/*`.
+   CustomErrorResponses to 0 → only then, at step 5, add `/api/*`.
 2. **Release image** `ghcr.io/zenvoraai/family-media-api-laravel:<S>`, `<S>` a full 40-hex
    family-media-api commit at or after `9b023ec`, built only by that repo's manual `release.yml`
    (GitHub `ubuntu-latest`, so linux/amd64, smoke-tested before push) — the same path as
@@ -55,12 +55,13 @@ reading (not executed).
 4. **Prisma migration state** of production *(code reading)* — read-only:
 
    ```bash
-   sudo -u postgres psql -d family_media -Atc "SELECT migration_name FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY 1;" | tee /tmp/prisma-migrations.txt | wc -l   # 74
+   sudo -u postgres psql -d family_media -Atc "SELECT migration_name FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY 1;" | tee /tmp/prisma-migrations.txt | wc -l   # 72
    tail -1 /tmp/prisma-migrations.txt                                                     # 20261124090000_refresh_token_live_chain_index
    grep -c 20261123120000_drop_removed_feature_tables /tmp/prisma-migrations.txt          # 1
    ```
 
-   Laravel's baseline migrations only record themselves on a Prisma-migrated database and refuse
+   72 is `PrismaBaselineMigration::PRISMA_MIGRATIONS` at 9b023ec, identical to Express's
+   `apps/api/prisma/migrations`. Laravel's baseline migrations only record themselves on a Prisma-migrated database and refuse
    any other list (nothing is changed then; the deploy stops after its dump). **If
    `20261123120000_drop_removed_feature_tables` is not applied, STOP and ask the CEO**: applying it
    drops the Story/Moment/Agent/GeneralChat/MediaAiTag/AiFeatureUsage/SmartSearchQueryCache tables,
@@ -99,14 +100,14 @@ sudoedit /opt/secrets/family-media/api-laravel.env      # never cat it
 | `COOKIE_DOMAIN` | absent (host-only cookies, `Path=/api` and `/api/auth`) |
 | `STORAGE_DRIVER` | `s3` |
 | `AWS_REGION`, `MEDIA_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `CLOUDFRONT_MEDIA_DOMAIN`, `CLOUDFRONT_MEDIA_DISTRIBUTION_ID`, `CLOUDFRONT_KEY_PAIR_ID`, `CLOUDFRONT_PRIVATE_KEY` | the Express values (PEMs on one line, literal `\n`) |
-| `OFFSITE_BACKUP_URI` *or* `OFFSITE_BACKUP_DISABLED=true` | exactly one |
+| `OFFSITE_BACKUP_URI` *or* `OFFSITE_BACKUP_DISABLED=true` | exactly one; the URI only `s3://<bucket>[/prefix]`, **never a local path or `file://`**: the container's root is read-only, `/tmp` is a 128m tmpfs, and the first sweep would copy every photo there |
 | `FM_HANDOFF_KEY_ID`, `FM_HANDOFF_PRIVATE_KEY_PEM` | written by the deploy from SSM |
 
 Leave out `APP_ENV`, `PORT`, `LISTEN_SOCKET`, `CLIENT_IP_HEADER`, `E2E_DISABLE_RATE_LIMIT`,
 `VIDEO_UPLOAD_ENABLED=true`, and any `replace-with…` placeholder (all refused or unused).
 
 ```bash
-# 1b. The CloudFront origin secret (hex only, 48 chars); kept for step 7, never committed or logged.
+# 1b. The CloudFront origin secret (hex only, 48 chars); kept for step 5, never committed or logged.
 sudo install -d -o root -g root -m 0700 /opt/secrets/family-media-origin
 secret="$(openssl rand -hex 24)"
 printf '"%s" 1;\n' "$secret" | sudo tee /opt/secrets/family-media-origin/origin-secret.map >/dev/null
@@ -154,12 +155,15 @@ sudo ls -l $f                                             # size in line with th
 The deploy (step 4) takes its own `family_media` dump again right before migrating; the daily
 02:30 instance backup can be 24 h old and is no substitute for either.
 
-**3b. Row and object counts** (keep the output; compare at 4, 6 and 9):
+**3b. Row and object counts** (kept in a file; compared at 3c, 4, 6, 9 and in a rollback):
 
 ```bash
-for t in User Family FamilyMember Media Album Person FaceEmbedding UploadIntent AuditEvent RefreshToken; do
-  printf '%s ' "$t"; sudo -u postgres psql -d family_media -Atc "SELECT count(*) FROM \"$t\";"
-done
+counts() {  # counts <database>
+  for t in User Family FamilyMember Media Album Person FaceEmbedding UploadIntent AuditEvent RefreshToken; do
+    printf '%s %s\n' "$t" "$(sudo -u postgres psql -d "$1" -Atc "SELECT count(*) FROM \"$t\";")"
+  done
+}
+counts family_media | tee ~/family-counts-3b.txt
 ```
 
 From a workstation with the owner's AWS credentials (bucket name from `api-laravel.env`):
@@ -170,21 +174,34 @@ aws s3 ls "s3://$MEDIA_BUCKET/"                               # top-level prefix
 for p in <each prefix>; do echo "$p $(aws s3 ls "s3://$MEDIA_BUCKET/$p" --recursive --summarize | tail -2 | tr '\n' ' ')"; done
 ```
 
-**3c. Rehearsal (recommended)** in a throwaway database, never on `family_media`:
+**3c. Rehearsal (mandatory)** in a throwaway database, never on `family_media`. It is also the
+rehearsal of the rollback restore: the same `createdb` + `pg_restore` + count check.
 
 ```bash
 role=<the DATABASE_URL user>
 sudo -u postgres createdb -O "$role" family_media_test_cutover
-sudo -u postgres pg_restore --no-owner --role="$role" -d family_media_test_cutover $f
-export FAMILY_API_LARAVEL_TAG=<S>
-# The production URL with only the database name swapped, never typed or echoed:
-rehearse() { docker compose run --rm --no-deps -T -e DATABASE_URL="$(sed -n 's#^DATABASE_URL=\(.*\)/family_media\([?].*\)\{0,1\}$#\1/family_media_test_cutover\2#p' /opt/secrets/family-media/api-laravel.env)" --entrypoint php family-api-laravel artisan "$@"; }
+sudo cat $f | sudo -u postgres pg_restore --no-owner --role="$role" -d family_media_test_cutover 2> ~/restore-3c.err
+# Expected: "must be owner of extension pg_trgm/pgcrypto" (COMMENT ON EXTENSION). Any other error: stop.
+grep ERROR ~/restore-3c.err | grep -vE 'must be owner of extension (pg_trgm|pgcrypto)' || echo "no unexpected errors"
+counts family_media_test_cutover | diff ~/family-counts-3b.txt - && echo "counts match"
+# The image runs with a copy of api-laravel.env whose DATABASE_URL names the rehearsal database:
+# a 0600 file, deleted afterwards, so the password never appears in a command line or `ps`.
+img=ghcr.io/zenvoraai/family-media-api-laravel:<S>
+envf="$(mktemp ~/rehearse.XXXXXX)"            # 0600
+sed 's#^\(DATABASE_URL=.*\)/family_media\([?].*\)\{0,1\}$#\1/family_media_test_cutover\2#' \
+  /opt/secrets/family-media/api-laravel.env >"$envf"
+grep -c '/family_media_test_cutover' "$envf"   # 1
+rehearse() { docker run --rm --network host --env-file "$envf" --entrypoint php "$img" artisan "$@"; }
 rehearse migrate --pretend          # read the SQL: only CREATEs (the baseline files only record themselves)
 rehearse migrate --force
 rehearse family:preflight           # preflight: ok
+rm -f "$envf"
 # Step 9's prechecks against family_media_test_cutover; then:
 sudo -u postgres dropdb family_media_test_cutover
 ```
+
+`docker run --env-file` takes values literally, as compose's `env_file` does for the unquoted
+`KEY=value` lines the deploy's shape check accepts; quote nothing in `api-laravel.env`.
 
 ## 4. Deploy Laravel (migrations)
 
@@ -207,7 +224,8 @@ Row counts (3b) unchanged. Rollback: see "Rollback".
 ## 5. CloudFront `/api/*` behaviour
 
 Apply family-media `infra/cloudfront/API-BEHAVIOR.md` (a7f421da) with: origin
-`family-api.valtou.com`, HTTPS only; custom header `X-Family-Origin-Secret: <$secret>`; viewer
+`family-api.valtou.com`, HTTPS only; custom header `X-Family-Origin-Secret: <$secret>` (the value
+in `/opt/secrets/family-media-origin/origin-secret.map`, step 1b; family-media cbca5bbc agrees); viewer
 headers **without `Host`** plus `CloudFront-Viewer-Address` (Cloudflare routes by Host; forwarding
 `family.valtou.com` would loop back to CloudFront).
 
@@ -273,6 +291,8 @@ deletes: S3 objects of stale upload intents, trash past each family's retention 
 and row), audit rows past retention, expired refresh tokens, queued offsite deletes (README
 "Family sweeps (host cron)" has the table). Before the first run:
 
+0. A fresh `family_media`-only dump, by the 3a recipe: steps 6 and 7 wrote data after both the
+   deploy's dump and the 02:30 backup.
 1. Today's 02:30 instance backup succeeded and is non-empty (workstation; bucket and prefix in
    aws-infrastructure `docs/lightsail-postgresql-s3-backup.md`):
    `aws s3 ls s3://<backup bucket>/postgres/family-media/production/ | tail -1` → today's date, size > 0.
@@ -280,17 +300,41 @@ and row), audit rows past retention, expired refresh tokens, queued offsite dele
 
    ```sql
    -- Trash the first run will purge (S3 + offsite + row), per family. Review the number; if large, decide first.
+   -- Timestamps are `timestamp without time zone` in UTC, hence now() AT TIME ZONE 'UTC'.
    SELECT m."familyId", count(*) FROM "Media" m JOIN "Family" f ON f.id = m."familyId"
-    WHERE m."deletedAt" < now() - make_interval(days => f."trashRetentionDays") AND m."purgeAttempts" < 5 GROUP BY 1;
-   -- Orphan-intent safety: must be 0 (an intent whose object a live Media row still uses).
-   SELECT count(*) FROM "UploadIntent" ui
-    WHERE ((ui.status = 'PENDING' AND ui."expiresAt" < now()) OR ui.status IN ('PROCESSING','FAILED'))
-      AND EXISTS (SELECT 1 FROM "Media" m WHERE m."s3Key" IN (ui."s3Key", ui."finalKey")
-                  OR m."thumbnailKey" = ui."thumbnailKey" OR m."displayKey" = ui."displayKey");
+    WHERE m."deletedAt" < (now() AT TIME ZONE 'UTC') - make_interval(days => f."trashRetentionDays")
+      AND m."purgeAttempts" < 5 GROUP BY 1;
+   -- Orphan intents (below): would_sweep is reviewed, key_in_use must be 0.
+   WITH utc AS (SELECT now() AT TIME ZONE 'UTC' AS t),
+   c AS (
+     SELECT ui.* FROM "UploadIntent" ui, utc
+     WHERE ((ui.status = 'PROCESSING' AND (ui."claimedAt" < utc.t - interval '10 minutes' OR (ui."claimedAt" IS NULL AND ui."createdAt" < utc.t - interval '10 minutes')))
+         OR (ui.status = 'PENDING' AND ui."expiresAt" < utc.t)
+         OR ui.status = 'FAILED')
+       AND NOT EXISTS (SELECT 1 FROM "Media" m WHERE m."uploadIntentId" = CASE WHEN ui.purpose = 'VIDEO_POSTER' THEN COALESCE(ui."parentIntentId", ui.id) ELSE ui.id END)
+     UNION
+     SELECT ui.* FROM "UploadIntent" ui
+     WHERE ui.status = 'CONFIRMED' AND ui.purpose = 'VIDEO_POSTER' AND ui."parentIntentId" IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM "Media" m WHERE m."uploadIntentId" = ui."parentIntentId")
+   )
+   SELECT (SELECT count(*) FROM c) AS would_sweep,
+          (SELECT count(*) FROM c JOIN "Media" m ON ARRAY[m."s3Key", m."thumbnailKey", m."displayKey"]
+                                     && ARRAY_REMOVE(ARRAY[c."s3Key", c."finalKey", c."thumbnailKey", c."displayKey"], NULL)) AS key_in_use;
    -- Face re-scan safety: must be 0.
    SELECT count(*) FROM "Media" m WHERE m."facesScannedAt" IS NULL
       AND EXISTS (SELECT 1 FROM "FaceEmbedding" f WHERE f."mediaId" = m.id);
    ```
+
+   The orphan-intent query is derived from `OrphanIntents.php` at 9b023ec, not executed. The
+   sweep takes two sets of upload intents. **A**: PROCESSING older than 10 minutes (`claimedAt`, or
+   `createdAt` when `claimedAt` is NULL), PENDING past `expiresAt`, or FAILED of any age, each
+   skipped when a `Media` row (trashed included) has `uploadIntentId` equal to the intent's id (for
+   a VIDEO_POSTER: `COALESCE(parentIntentId, id)`). **B**: CONFIRMED VIDEO_POSTER intents with a
+   `parentIntentId` no `Media` row references. Each swept intent becomes EXPIRED and its `s3Key`,
+   `finalKey`, `thumbnailKey` and `displayKey` objects are deleted. `key_in_use` counts swept
+   intents with a key any `Media` row still uses (Media has only `s3Key`, `thumbnailKey`,
+   `displayKey`; a video poster lands in `thumbnailKey`), so it must be 0. Batches are 500 (A)
+   and 100 (B) per run; the query counts all of them.
 
    Any non-zero safety count: stop and ask. Sweeps never list the bucket, and clustering skips
    locked or hand-assigned faces *(code reading)*.
@@ -319,6 +363,7 @@ dump plus Express. **Restoring it discards everything written to `family_media` 
 
 ```bash
 cd /opt/homelab-infra
+# counts(): the function from step 3b; ~/family-counts-3b.txt: its output.
 crontab -e                                                  # delete the three family sweep lines
 docker compose stop family-api-laravel
 # Restore family_media ONLY, from the deploy's dump (path printed by the deploy; or the step-3a dump),
@@ -326,7 +371,12 @@ docker compose stop family-api-laravel
 role=<the DATABASE_URL user>; dump=/opt/backups/family-media-premigrate/<file>.dump
 sudo pg_restore --list "$dump" >/dev/null && echo dump readable
 sudo -u postgres createdb -O "$role" family_media_rollback
-sudo cat "$dump" | sudo -u postgres pg_restore --no-owner --role="$role" -d family_media_rollback
+sudo cat "$dump" | sudo -u postgres pg_restore --no-owner --role="$role" -d family_media_rollback 2> ~/restore-rollback.err
+# Expected: "must be owner of extension pg_trgm/pgcrypto" (COMMENT ON EXTENSION). Any other error: stop.
+grep ERROR ~/restore-rollback.err | grep -vE 'must be owner of extension (pg_trgm|pgcrypto)' || echo "no unexpected errors"
+# The dump was taken with Express stopped and before any migration, so it must equal step 3b exactly
+# (step-9 dump: compare with that day's counts instead). A difference: stop, do not rename.
+counts family_media_rollback | diff ~/family-counts-3b.txt - && echo "counts match"
 sudo -u postgres psql -c "SELECT pid FROM pg_stat_activity WHERE datname = 'family_media';"   # must be empty
 sudo -u postgres psql -c 'ALTER DATABASE family_media RENAME TO family_media_laravel_'"$(date -u +%Y%m%d)"';'
 sudo -u postgres psql -c 'ALTER DATABASE family_media_rollback RENAME TO family_media;'
