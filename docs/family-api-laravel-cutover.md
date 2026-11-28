@@ -190,8 +190,19 @@ img=ghcr.io/zenvoraai/family-media-api-laravel:<S>
 envf="$(mktemp ~/rehearse.XXXXXX)"            # 0600
 sed 's#^\(DATABASE_URL=.*\)/family_media\([?].*\)\{0,1\}$#\1/family_media_test_cutover\2#' \
   /opt/secrets/family-media/api-laravel.env >"$envf"
-grep -c '/family_media_test_cutover' "$envf"   # 1
-rehearse() { docker run --rm --network host --env-file "$envf" --entrypoint php "$img" artisan "$@"; }
+# Fail closed: exactly one DATABASE_URL, naming the throwaway database, and the production name
+# nowhere in the copy. Checked here and again inside rehearse(), which refuses to run without it.
+rehearsal_env_ok() {
+  [ -s "$envf" ] &&
+  [ "$(grep -c '^DATABASE_URL=' "$envf")" = 1 ] &&
+  grep -Eq '^DATABASE_URL=.*/family_media_test_cutover([?].*)?$' "$envf" &&
+  ! grep -Eq '/family_media([?[:space:]]|$)' "$envf"
+}
+rehearsal_env_ok || { rm -f "$envf"; echo "STOP: DATABASE_URL was not rewritten to family_media_test_cutover"; false; }
+rehearse() {
+  rehearsal_env_ok || { echo "STOP: the rehearsal env file does not point at family_media_test_cutover"; return 1; }
+  docker run --rm --network host --env-file "$envf" --entrypoint php "$img" artisan "$@"
+}
 rehearse migrate --pretend          # read the SQL: only CREATEs (the baseline files only record themselves)
 rehearse migrate --force
 rehearse family:preflight           # preflight: ok
