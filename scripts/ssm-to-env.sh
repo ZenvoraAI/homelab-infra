@@ -4,7 +4,7 @@ set -eu
 # Restores a service's env file from its two SSM parameters (written by
 # env-to-ssm.sh; format in lib/env-ssm-lib.sh). The reassembled file must
 # match the sha256 recorded at backup time, or nothing is written. Prints only
-# the target path, its size and the versions read (the file's sha256 only with
+# the target path and the versions read (the file's sha256 only with
 # --print-sha, for drills: deploy logs never carry a hash of the file).
 #
 #   scripts/ssm-to-env.sh --profile P --target /tmp/drill/api.env family-media/api   # drill
@@ -226,4 +226,4 @@ if [ "$KEEP_ONE" -eq 1 ] && [ -n "$BACKUP" ]; then
   prune_backups || echo "$NAME: $SERVICE: WARNING: pruning older backups of $TARGET failed; remove them by hand" >&2
 fi
 
-echo "$NAME: $SERVICE: changed: installed $TARGET from $VERSIONS, $(envssm_bytes "$ENVSSM_WORK/env") bytes (hash verified$(sha_note))"
+echo "$NAME: $SERVICE: changed: installed $TARGET from $VERSIONS (hash verified$(sha_note))"

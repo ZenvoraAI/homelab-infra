@@ -211,6 +211,10 @@ if OUT=$(memorial_with "[$(pub_entry ka "$TMP/a.key")]" | h_edit aiqiuqi-memoria
 [ "$(version_of /env/aiqiuqi-memorial/api)" = "$v" ] || fail "memorial dropping family's key was written"
 if OUT=$(family_with kz "$TMP/b.key" | h_edit family-media/api); then fail "a kid memorial does not list must be refused"; fi
 grep -q 'FM_HANDOFF_KEY_ID (family-media/api) is not a kid in MEMORIAL_HANDOFF_PUBLIC_KEYS' <<<"$OUT" || fail "expected the kid refusal:\n$OUT"
+# A passphrase-protected private key fails closed (-passin pass:, no prompt).
+openssl pkey -in "$TMP/b.key" -aes256 -passout pass:fakesecond-9i -out "$TMP/enc.key" 2>/dev/null
+if OUT=$(family_with kb "$TMP/enc.key" | h_edit family-media/api); then fail "an encrypted private key must be refused"; fi
+grep -q 'FM_HANDOFF_PRIVATE_KEY_PEM in family-media/api is not a readable private key' <<<"$OUT" || fail "expected the unreadable-key refusal:\n$OUT"
 # The explicit override writes, with a warning.
 v=$(version_of /env/family-media/api)
 OUT=$(family_with kz "$TMP/b.key" | h_edit --allow-handoff-mismatch family-media/api) || fail "--allow-handoff-mismatch must write:\n$OUT"

@@ -139,6 +139,9 @@ cat >"$BIN/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "docker $* [tag=${FAMILY_API_LARAVEL_TAG:-}${MEMORIAL_API_LARAVEL_TAG:-}]" >>"$CALLS"
 case "$*" in
+  "compose up -d"*)
+    # STUB_UP_FAIL_TAG: bringing up that tag fails (a failed swap).
+    [ -z "${STUB_UP_FAIL_TAG:-}" ] || [ "${FAMILY_API_LARAVEL_TAG:-}${MEMORIAL_API_LARAVEL_TAG:-}" != "$STUB_UP_FAIL_TAG" ] || exit 1 ;;
   "compose ps -q --status running"*) [ "${STUB_READY:-1}" = 1 ] && echo sched-id ;;
   *fcgi-probe.sh*) [ "${STUB_READY:-1}" = 1 ]; exit ;;
 esac

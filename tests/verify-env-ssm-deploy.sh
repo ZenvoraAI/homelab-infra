@@ -74,7 +74,7 @@ printf 'OLD=1\n' >"$FAM"
 printf 'old\n' >"$FAM.bak-20200101T000000Z"
 printf 'mine\n' >"$FAM.bak-manual"
 OUT=$(deploy family) || fail "deploy with a changed file failed:\n$OUT"
-grep -q "changed: installed $FAM from /env/family-media/api v1, /env/family-media/api-pem v1, [0-9]* bytes (hash verified)" <<<"$OUT" \
+grep -q "changed: installed $FAM from /env/family-media/api v1, /env/family-media/api-pem v1 (hash verified)" <<<"$OUT" \
   || fail "expected the changed report with versions:\n$OUT"
 cmp -s "$FAM" "$TMP/fam-seed.env" || fail "the deploy did not install the SSM content"
 n_get=$(line_of "aws family-ssm get-parameter /env/family-media/api:1"); n_pull=$(line_of "compose pull")
@@ -164,6 +164,21 @@ for app in family memorial; do
   ls "$f".rollback.* >/dev/null 2>&1 && fail "$app: a rollback temp file was left"
   rm -f "$f".bak-*
 done
+# 7b. A failed swap (docker compose up of the new release fails), both
+# services: rolled back like a failed readiness -- env .bak restored, the
+# previous tag brought up, non-zero exit, no pin.
+for app in family memorial; do
+  f=$(envfile_of "$app")
+  { cat "$(seedfile_of "$app")"; printf 'PREVIOUS=1\n'; } >"$f"; chmod 600 "$f"; cp "$f" "$TMP/host-copy"
+  if OUT=$(STUB_UP_FAIL_TAG="$REL" deploy "$app"); then fail "$app: a failed swap must fail the deploy"; fi
+  grep -q 'swap failed for release' <<<"$OUT" || fail "$app: expected the swap failure:\n$OUT"
+  grep -F "compose up -d" "$LOG" | grep -qF "[tag=$PREV]" || fail "$app: a failed swap did not bring up $PREV:\n$(cat "$LOG")"
+  cmp -s "$f" "$TMP/host-copy" || fail "$app: a failed swap did not restore the previous env file"
+  grep -q "WARNING: restored $f" <<<"$OUT" || fail "$app: no restore warning after a failed swap:\n$OUT"
+  called "image-pins.sh promote" && fail "$app: a failed swap was pinned"
+  rm -f "$f".bak-*
+done
+
 # A rollback with nothing pulled (identical file) leaves the file alone.
 cp "$TMP/fam-seed.env" "$FAM"
 if OUT=$(STUB_READY=0 deploy family); then fail "an unready release must fail"; fi
@@ -173,6 +188,7 @@ cmp -s "$FAM" "$TMP/fam-seed.env" || fail "the identical file changed in a rollb
 # 8. No fake value, and no hash of an env file, ever reached a deploy log.
 # shellcheck disable=SC2119 # no extra tokens here
 assert_no_fakes
+grep -q ' bytes' "$DEPLOYLOG" && fail "a byte count reached the deploy output:\n$(grep ' bytes' "$DEPLOYLOG")"
 grep -Eq '[0-9a-f]{64}' "$DEPLOYLOG" && fail "a sha256 reached the deploy output:\n$(grep -E '[0-9a-f]{64}' "$DEPLOYLOG")"
 
 echo "PASS: deploys pull the whole env from /env (read profile, pinned versions, before the shape check, staged shape check, fail closed, identical file untouched, one .bak restored on rollback, no hash in the log, no per-key refresh, mirrors only warned)"

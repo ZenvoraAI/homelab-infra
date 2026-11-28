@@ -23,8 +23,9 @@ envhandoff_check() { # family_env memorial_env workdir
   keys=$(envssm_env_value "$2" MEMORIAL_HANDOFF_PUBLIC_KEYS) || { echo "MEMORIAL_HANDOFF_PUBLIC_KEYS is missing from aiqiuqi-memorial/api"; return 1; }
   command -v openssl >/dev/null 2>&1 || { echo "openssl is not installed, so FM_HANDOFF_PRIVATE_KEY_PEM cannot be checked against MEMORIAL_HANDOFF_PUBLIC_KEYS"; return 1; }
   # The PEM is one line with literal \n (README "Family API on Laravel").
+  # -passin pass: makes an encrypted key fail closed instead of prompting.
   envhandoff_unquote "$priv" | LC_ALL=C awk '{ gsub(/\\n/, "\n"); print }' >"$3/handoff-priv.pem"
-  openssl pkey -in "$3/handoff-priv.pem" -pubout -out "$3/handoff-pub.pem" 2>/dev/null \
+  openssl pkey -passin pass: -in "$3/handoff-priv.pem" -pubout -out "$3/handoff-pub.pem" 2>/dev/null \
     || { echo "FM_HANDOFF_PRIVATE_KEY_PEM in family-media/api is not a readable private key"; return 1; }
   body=$(grep -v -- '-----' "$3/handoff-pub.pem" | tr -d '\r\n ')
   # JSON escapes: \n inside the pem strings, and possibly \/ for /.

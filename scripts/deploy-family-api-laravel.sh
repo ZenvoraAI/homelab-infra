@@ -129,8 +129,6 @@ docker compose run --rm --no-deps -T --entrypoint php "$API" artisan migrate --f
 PREV_TAG="$(scripts/image-pins.sh get "$API" 2>/dev/null | sed -nE 's/^([0-9a-f]{40})(@sha256:[0-9a-f]{64})?$/\1/p' || true)"
 [ "$PREV_TAG" != "$RELEASE_SHA" ] || PREV_TAG=""
 
-docker compose up -d "$API" 2>&1 | redact
-
 # The release being rolled back to ran with the env file the pull replaced.
 restore_env_backup() {
   [ -n "$ENV_BACKUP" ] || return 0
@@ -163,6 +161,11 @@ fail_after_swap() {
   rollback
   exit 1
 }
+
+# Defined above so a failed swap (a half-recreated set included) is rolled
+# back too, the env .bak with it; pipefail makes the pipeline fail.
+docker compose up -d "$API" 2>&1 | redact \
+  || fail_after_swap "swap failed for release $RELEASE_SHA"
 
 ready() {
   docker compose exec -T "$API" fcgi-probe.sh "$READY_PATH" >/dev/null 2>&1 \
