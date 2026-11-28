@@ -823,25 +823,51 @@ exactly once. The crontab itself is family-media's `infra/crontab.txt`
 
 The Express crontab (`node dist/scripts/sweep*.js` in the `api` container) was
 never installed on this host (family-media jobs-inventory: face scans stopped
-2026-09-17, offsite backups never ran), so there is nothing to remove; check
-anyway. Install after the first Laravel deploy is ready (the jobs `exec` into
-the running container; with it stopped they fail into their logs):
+2026-09-17, offsite backups never ran), so these jobs have never run against the
+production data. Several steps **delete data**:
+
+| Step (`family:sweep`) | Deletes |
+| --- | --- |
+| orphan upload intents | S3 objects of uploads never confirmed (intent older than its deadline) |
+| audit retention | `AuditEvent` rows older than the platform's `auditRetentionDays` (0 = keep) |
+| expired refresh tokens | refresh-token rows expired for more than a day |
+| trash retention | trashed media past each family's `trashRetentionDays`: S3 objects and rows, **permanently** |
+| pending offsite deletes | offsite backup copies already queued for deletion |
+| offsite backups | nothing (writes copies to `OFFSITE_BACKUP_URI`) |
+
+The face sweeps only add rows (embeddings, person assignments). There is no
+dry-run option (`family:sweep` takes none at family-media-api 9b023ec). So the
+first run is by hand, after the cutover's verified database dump, with counts
+taken before and after; the cron is installed only once that run is checked:
 
 ```bash
+cd /opt/homelab-infra
 crontab -l 2>/dev/null | grep -nE 'sweep|family' || echo "no family/sweep entries"   # expect none
+# What the first run may delete (read-only; database name from api-laravel.env):
+sudo -u postgres psql -d <db> -c 'SELECT f.id, f."trashRetentionDays", count(m.*) AS trashed FROM "Family" f LEFT JOIN "Media" m ON m."familyId" = f.id AND m."deletedAt" IS NOT NULL GROUP BY 1, 2;'
+sudo -u postgres psql -d <db> -c 'SELECT "auditRetentionDays" FROM "PlatformSettings";'
+# Row counts + S3 counts before (S3 per prefix from a workstation: docs/family-api-laravel-cutover.md)
+docker compose exec -T family-api-laravel php artisan family:sweep; echo "exit $?"   # 0; one summary line
+# Same counts after; every difference must be explained by the summary line.
+```
+
+Then install (family-media `infra/crontab.txt`, 37d0bd90 or later on main):
+
+```bash
 for f in family-sweep family-sweep-face family-sweep-cluster; do
   sudo touch /var/log/$f.log && sudo chown ubuntu:ubuntu /var/log/$f.log && sudo chmod 0640 /var/log/$f.log
 done
-# crontab.txt copied from a reviewed family-media commit (37d0bd90 or later on main)
 { crontab -l 2>/dev/null; cat crontab.txt; } | crontab -
 crontab -l | grep -c 'family-api-laravel php artisan family:sweep'                  # 3
-cd /opt/homelab-infra && docker compose exec -T family-api-laravel php artisan family:sweep; echo "exit $?"   # one run by hand; 0
 ```
 
-Each command exits 1 when any step failed; the log files are the only trace,
-so read them after the first scheduled run. They are not rotated yet (a
-`logrotate` rule is an open item). Rollback: `crontab -e` and delete the three
-lines; nothing else depends on them.
+Face sweeps and uploads share the app's container-wide pixel lock (one Node job
+at a time): an upload that waits more than 10 s for a running face batch gets a
+503 and can be retried; the face sweeps are also under `flock -n`, so they never
+overlap each other. Each command exits 1 when any step failed; the log files
+are the only trace, so read them after the first scheduled run. They are not
+rotated yet (a `logrotate` rule is an open item). Rollback: `crontab -e` and
+delete the three lines; nothing else depends on them.
 
 ## Container hardening
 
