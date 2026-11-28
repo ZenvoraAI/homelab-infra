@@ -26,10 +26,13 @@ IMAGE_REPO="ghcr.io/${GHCR_OWNER:-zenvoraai}/family-media-api-laravel"
 # Its own file: APP_KEY and the rotated JWT_SECRET (owner decision D2) are
 # Laravel's alone; the Express file stays as it is until cutover.
 ENV_FILE="${FAMILY_LARAVEL_ENV_FILE:-/opt/secrets/family-media/api-laravel.env}"
-# Same directory, name pattern and 14-day retention as the Express deploy's
-# pre-deploy dumps (family-media deploy-api.yml), so one rule covers both.
-DUMP_DIR="${FAMILY_DUMP_DIR:-/opt/backups}"
+# Root 0700, its own directory under /opt/backups (whose mode other backup
+# tooling may rely on): the dumps are the family's whole database. Same name
+# pattern and 14-day retention as the Express deploy's pre-deploy dumps.
+DUMP_DIR="${FAMILY_DUMP_DIR:-/opt/backups/family-media-premigrate}"
 DUMP_RETENTION_DAYS=14
+# A .partial older than this is a leftover of a killed run (no other writer here).
+STALE_PARTIAL_MINUTES=60
 READY_ATTEMPTS=30
 READY_INTERVAL_SECONDS=3
 READY_PATH=/api/health/ready
@@ -81,15 +84,21 @@ docker compose run --rm --no-deps -T --entrypoint php "$API" artisan family:pref
 # inside a `( ) || die` subshell, and a pg_dump that dies half-way still leaves
 # a non-empty file.
 dump="$DUMP_DIR/family-media-pre-deploy-$(date -u +%Y%m%dT%H%M%SZ)-${RELEASE_SHA:0:12}.dump"
+# homelab: owner-only before a byte is written -- the directory 0700 and the
+# .partial created 0600 first (tee then truncates it, keeping the mode), never
+# chmod-ed afterwards -- and no .partial outlives a failed run.
 (
+  umask 077 &&
+  sudo -n install -d -o root -g root -m 0700 "$DUMP_DIR" &&
+  sudo -n find "$DUMP_DIR" -maxdepth 1 -type f -name 'family-media-pre-deploy-*.dump.partial' -mmin +"$STALE_PARTIAL_MINUTES" -delete &&
+  sudo -n install -o root -g root -m 0600 /dev/null "$dump.partial" &&
   sudo -n -u postgres pg_dump --format=custom --no-owner --no-privileges "$DATABASE_NAME" \
     | sudo -n tee "$dump.partial" >/dev/null &&
   sudo -n test -s "$dump.partial" &&
   # homelab: a dump pg_restore cannot read is no way back (the Express deploy checked the same).
   sudo -n pg_restore --list "$dump.partial" >/dev/null &&
-  sudo -n chmod 0600 "$dump.partial" &&
   sudo -n mv "$dump.partial" "$dump"
-) || die "pre-migration dump failed; not migrating"
+) || { sudo -n rm -f -- "$dump.partial" || true; die "pre-migration dump failed; not migrating"; }
 sudo -n find "$DUMP_DIR" -maxdepth 1 -type f -name 'family-media-pre-deploy-*.dump' -mtime +"$DUMP_RETENTION_DAYS" -delete \
   || say "old dump cleanup failed; dumps retained"
 say "pre-migration dump: $dump"

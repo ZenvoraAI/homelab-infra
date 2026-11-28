@@ -50,6 +50,19 @@ printf 'PGDMP-partial'
 [ "${STUB_DUMP_FAIL:-}" = 1 ] && exit 1
 printf -- '-complete'
 STUB
+# install: the real one without -o/-g (not root here). tee: records its target's
+# mode when it opens it, i.e. before any dump data is written.
+cat >"$BIN/install" <<'STUB'
+#!/usr/bin/env bash
+args=(); while [ "$#" -gt 0 ]; do case "$1" in -o|-g) shift 2 ;; *) args+=("$1"); shift ;; esac; done
+exec /usr/bin/install "${args[@]}"
+STUB
+cat >"$BIN/tee" <<'STUB'
+#!/usr/bin/env bash
+mode="$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || echo missing)"
+echo "tee-target-mode $mode" >>"$CALLS"
+exec /usr/bin/tee "$@"
+STUB
 # pg_restore --list: reads the dump; fails on a truncated one (STUB_RESTORE_FAIL=1).
 cat >"$BIN/pg_restore" <<'STUB'
 #!/usr/bin/env bash
@@ -108,6 +121,10 @@ grep -F "compose pull" "$LOG" | grep -qF "[tag=$REL]" || fail "pull did not use 
 grep -F "fcgi-probe.sh" "$LOG" | grep -qF "/api/health/ready" || fail "readiness must probe /api/health/ready"
 ls "$TMP"/dumps/family-media-pre-deploy-*-111111111111.dump >/dev/null 2>&1 || fail "no pre-migration dump was kept"
 [ "$(cat "$TMP"/dumps/*.dump)" = "PGDMP-partial-complete" ] || fail "the dump content is wrong"
+grep -qx 'tee-target-mode 600' "$LOG" || fail "the .partial must exist 0600 before dump data is written:\n$(grep tee-target "$LOG")"
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+[ "$(mode_of "$TMP"/dumps/*.dump)" = 600 ] || fail "the dump must be 0600, got $(mode_of "$TMP"/dumps/*.dump)"
+[ "$(mode_of "$TMP/dumps")" = 700 ] || fail "the dump directory must be 0700, got $(mode_of "$TMP/dumps")"
 grep -q 'pw@' <<<"$OUT" && fail "the database password reached the output"
 
 # 3. Dumps older than the retention are pruned; recent ones are kept.
@@ -117,6 +134,15 @@ valid_env
 STUB_PIN="$PREV" run_deploy "$REL" >/dev/null || fail "second deploy failed"
 [ ! -e "$TMP/dumps/family-media-pre-deploy-old.dump" ] || fail "a dump past retention was kept"
 [ -e "$TMP/dumps/family-media-pre-deploy-recent.dump" ] || fail "a recent dump was pruned"
+rm -f "$TMP"/dumps/*
+
+# 3b. A stale .partial from a killed run is removed; a fresh one is left alone.
+touch -t 202601010000 "$TMP/dumps/family-media-pre-deploy-stale.dump.partial"
+touch "$TMP/dumps/family-media-pre-deploy-fresh.dump.partial"
+valid_env
+STUB_PIN="$PREV" run_deploy "$REL" >/dev/null || fail "deploy with leftovers failed"
+[ ! -e "$TMP/dumps/family-media-pre-deploy-stale.dump.partial" ] || fail "a stale .partial was kept"
+[ -e "$TMP/dumps/family-media-pre-deploy-fresh.dump.partial" ] || fail "a fresh .partial was removed"
 rm -f "$TMP"/dumps/*
 
 touched_nothing() {
@@ -137,6 +163,7 @@ valid_env
 if OUT="$(STUB_DUMP_FAIL=1 run_deploy "$REL")"; then fail "a failed dump must fail the deploy:\n$OUT"; fi
 called "artisan migrate" && fail "migrated without a complete dump"
 ls "$TMP"/dumps/*.dump >/dev/null 2>&1 && fail "a half dump was kept as a .dump"
+ls "$TMP"/dumps/*.partial >/dev/null 2>&1 && fail "a failed dump left its .partial behind"
 touched_nothing dump
 rm -f "$TMP"/dumps/*
 
@@ -145,6 +172,7 @@ valid_env
 if OUT="$(STUB_RESTORE_FAIL=1 run_deploy "$REL")"; then fail "an unreadable dump must fail the deploy:\n$OUT"; fi
 called "artisan migrate" && fail "migrated after an unreadable dump"
 ls "$TMP"/dumps/*.dump >/dev/null 2>&1 && fail "an unreadable dump was kept as a .dump"
+ls "$TMP"/dumps/*.partial >/dev/null 2>&1 && fail "an unreadable dump left its .partial behind"
 touched_nothing restore
 rm -f "$TMP"/dumps/*
 
