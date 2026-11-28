@@ -69,7 +69,8 @@ before. 80 and 443 accept only Cloudflare's published ranges
 (https://www.cloudflare.com/ips-v4, https://www.cloudflare.com/ips-v6), so the
 origin cannot be reached around Cloudflare's WAF and rate limits. Every public
 hostname is proxied (orange cloud); the last DNS-only one,
-`api.family.valtou.com`, was retired on 2026-11-01. Certbot's HTTP-01
+`api.family.valtou.com`, was retired on 2026-11-01; its DNS-only A record (pointing
+straight at the origin IP) lingered until the CEO deleted it in Cloudflare on 2026-11-28. Certbot's HTTP-01
 challenge still works because Let's Encrypt reaches the webroot through
 Cloudflare. A new hostname must be proxied before it can work, and the ranges
 should be re-checked now and then (Cloudflare announces changes in advance):
@@ -1449,7 +1450,8 @@ fail. Once nginx runs without `dayandyou.conf`, delete those lineages
 is a separate lineage and stays.
 
 Do not use `certbot --nginx`: the host nginx service is intentionally stopped and, since
-2026-11-28, disabled (`systemctl disable nginx`). Its leftover `/etc/nginx` config still names
+2026-11-28, disabled and masked (`systemctl disable nginx; systemctl mask nginx`). The nginx container
+mounts nothing from `/etc/nginx`; that tree is pre-Docker history, kept as a record. Its leftover `/etc/nginx` config still names
 the certificate of `api.family.valtou.com` (retired 2026-11-01), so it fails its config test at
 boot; the reboot that day showed it as a failed unit. Keep it disabled: if it ever started at boot,
 it would race the nginx container for ports 80/443.
