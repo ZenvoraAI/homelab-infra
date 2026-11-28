@@ -365,6 +365,161 @@ file on disk breaks nothing. Validate, then recreate.
 - Certbot state lives under `/etc/letsencrypt`; ACME challenge files live at
   `/var/lib/homelab-acme` and are mounted read-only into Docker nginx.
 
+## Env backups in SSM
+
+Every service's whole env file is also kept in SSM Parameter Store, so a lost
+host or a broken hand edit can be undone without reassembling it key by key.
+`scripts/env-to-ssm.sh` writes the backup and checks it. `scripts/ssm-to-env.sh`
+restores it. This is a copy of the files, not where they come from: the
+refresh scripts above still write them from `/<product>/prod/*`.
+
+### Naming and contents
+
+| Parameter (`/env/` + …) | Source file under `/opt/secrets/` |
+| --- | --- |
+| `family-media/api` | `family-media/api-laravel.env` |
+| `aiqiuqi-memorial/api` | `aiqiuqi-memorial/api.env` |
+| `securevault/api` | `securevault/api.env` |
+| `dayandyou-api/staging` | `dayandyou-api/staging.env` |
+| `zenvora-admin/app` | `zenvora-admin/.env` |
+| `family-media/origin-secret` | `family-media-origin/origin-secret.map` (the nginx map line, stored as is) |
+| `family-media/express-legacy` | `family-media/.env`, optional: skipped by `all` when the file is gone. Delete both of its parameters when the Express rollback window closes. |
+
+The table is `ENVSSM_SERVICES` in `scripts/lib/env-ssm-lib.sh`; add a service there.
+
+Each file becomes two SecureStrings (default `aws/ssm` key, Standard tier,
+so each value can be at most 4096 bytes):
+
+- `/env/<service>` holds every line in file order, except the long ones.
+  Each long line is replaced by a marker `#env-ssm:pem KEY`.
+- `/env/<service>-pem` holds the long lines, in order. A line is long when it is
+  `KEY=value` (or `export KEY=value`) and the value is over 512 characters or
+  contains `-----BEGIN` (CLOUDFRONT_PRIVATE_KEY, FM_HANDOFF_PRIVATE_KEY_PEM,
+  public keys too).
+- Both values start with a header line and end with `#env-ssm end`. The main
+  header records the file's sha256, whether it ends with a newline, and the
+  number of long lines. Comments, blank lines, CRs and lines that are not
+  `KEY=value` are kept byte for byte, so the restored file is identical to
+  the source. A file that already has a line starting with `#env-ssm` is
+  refused.
+- `-pem` is always written, with zero lines when nothing is long. That way a
+  key removed from the file never lives on in SSM as a stale secret, and a
+  restore always reads exactly two parameters.
+- If either part would be over 4096 bytes, the backup refuses before
+  writing anything. It never falls back to the Advanced tier. Fix it by moving
+  a value out of the file, not by changing the tier.
+- Tags: `env-ssm-source` (the path), `env-ssm-sha256` (of the whole file) and
+  `env-ssm-part` (`main` or `pem`). The description names the path. A value
+  never goes into a tag, a description, a command line (the scripts pass it as
+  `file://` from a `0700` temp dir that is removed on every exit), or the
+  output. The scripts print only names, byte sizes, versions and hashes.
+  AWS error text is cut down to the error code, because it can quote the request.
+
+The per-service read profiles (`family-ssm`, `memorial-ssm`, `securevault-ssm`,
+`dayandyou-api-ssm`, `zenvora-admin-ssm`) must **not** get `/env/*`. A
+parameter there holds a service's entire env, and all of them together are
+every secret on the host. Keep each service's blast radius at its own
+`/<product>/prod/*`.
+
+### Writer credential (temporary)
+
+The CEO creates a dedicated IAM user `env-backup-temp` (access key only, no
+console) with this inline policy and nothing else. The scripts call only
+`PutParameter`, `GetParameter` and `AddTagsToResource`; `GetParameters` and
+`ListTagsForResource` are there for a manual check. No KMS statement is
+needed: the AWS-managed `aws/ssm` key's policy already allows in-account
+principals to use it through SSM.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EnvBackupsOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:AddTagsToResource",
+        "ssm:ListTagsForResource"
+      ],
+      "Resource": "arn:aws:ssm:ap-southeast-2:198075950569:parameter/env/*"
+    }
+  ]
+}
+```
+
+On the host, as the user who runs the scripts (`ubuntu`, not root; a file
+`ubuntu` cannot read is read with `sudo cat`):
+
+```bash
+aws configure --profile env-backup-temp     # region ap-southeast-2, output text
+```
+
+Neither script has a default profile. Pass `--profile env-backup-temp`, or set
+`AWS_PROFILE`. The region is `ap-southeast-2` unless `AWS_REGION` says
+otherwise.
+
+### Back up and verify
+
+```bash
+cd /opt/homelab-infra
+scripts/env-to-ssm.sh --dry-run all                          # names and sizes, no AWS call
+scripts/env-to-ssm.sh --profile env-backup-temp all          # write, read back, compare sha256
+scripts/env-to-ssm.sh --profile env-backup-temp --verify-only all   # later: does SSM still match the files?
+```
+
+A backup reads both parameters back, reassembles them and compares the sha256
+with the file. Any mismatch, a missing required file, or an oversize part
+exits non-zero, and `all` names the services that failed. The others still
+run. The `-pem` part is written before the main part, so a run cut off
+between the two leaves a pair whose hashes disagree. The restore refuses that
+pair; re-run the backup.
+
+**Rotation:** after any change to one of these files (a refresh script, a
+redeploy that rewrites it, a rotated key), re-run the backup for that
+service. `--verify-only all` shows which backups are stale.
+
+### Restore drill
+
+Restore into a scratch path and compare hashes. Never `cat` the file.
+
+```bash
+D=$(mktemp -d)                                               # 0700
+scripts/ssm-to-env.sh --profile env-backup-temp --target "$D/api.env" family-media/api
+sudo sha256sum /opt/secrets/family-media/api-laravel.env     # must equal the printed sha256
+rm -rf "$D"
+```
+
+A real restore writes the service's own path. A non-empty existing file is
+refused unless `--force` is given:
+
+```bash
+scripts/ssm-to-env.sh --profile env-backup-temp --force family-media/api
+```
+
+The restore refuses to write anything if the reassembled file does not match
+the sha256 recorded at backup. It writes a `0600` temp file in the target's
+directory and `mv`s it into place. The file keeps the owner and mode of the
+file it replaces. A new file gets `--owner`/`--mode`, or else the invoking
+user (`SUDO_USER` under sudo) and `0600`. A mode that gives "other" any
+access is refused. When the target directory is not writable, the install
+steps use `sudo`. Restart the service's containers afterwards
+(`docker compose up -d --no-deps --force-recreate <service>`).
+
+### Afterwards: remove the temporary credential
+
+The writer profile can read every env backup. Once the run is done:
+
+1. On the host, delete the `[env-backup-temp]` section from
+   `~/.aws/credentials` and the `[profile env-backup-temp]` section from
+   `~/.aws/config` of the user that ran `aws configure`, and check that
+   `aws configure list-profiles` no longer shows it.
+2. In IAM, delete the access key of `env-backup-temp`, then the user.
+
+The next backup (rotation, drill) creates a fresh temporary user the same way.
+
 ## `scripts/` — host tooling
 
 | Script | What it does |
@@ -382,6 +537,8 @@ file on disk breaks nothing. Validate, then recreate.
 | `memorial-deploy-gate.sh` | The forced command of the memorial-api deploy key, installed as `/usr/local/sbin/memorial-deploy-gate` (see "Memorial API on Laravel"). Allows only `deploy-memorial-api-laravel <release sha> <homelab sha>`, and only when the homelab sha is origin/main's tip; fast-forwards to it and hands over to the next script. |
 | `deploy-memorial-api-laravel.sh` | The Laravel memorial deploy on the host: secrets, env-file shape, pull, preflight, pre-migration dump, migration, swap of both services, readiness of both FPM pools, pin, prune. Rolls an unready release back to the previous one. |
 | `refresh-zenvora-admin-secrets.sh` | Pulls zenvora-admin's 14 secrets from SSM into its env file: GitHub App credentials, SES SMTP credentials, token-encryption key, whitelisted user ID, plus three tokens for external read-only APIs (a fine-grained GitHub alert-check PAT covering all ZenvoraAI-owned tracked repos, a classic PAT for GHCR package listing since neither GitHub Apps nor fine-grained PATs expose an org-level Packages permission, and a Cloudflare API token scoped to the three onboarded zones for the traffic/security-events panel). Same pattern as the memorial scripts, for the same reason. |
+| `env-to-ssm.sh [--dry-run\|--verify-only] <service\|all>` | Backs up a whole env file into SSM `/env/<service>` and `/env/<service>-pem` (SecureString, Standard tier), then reads both back and checks the sha256 (see "Env backups in SSM"). Needs an explicit `--profile` or `AWS_PROFILE`. |
+| `ssm-to-env.sh [--target path] [--force] <service>` | Restores an env file from those two parameters, atomically, after checking the sha256 recorded at backup. Refuses to overwrite a non-empty file without `--force`. |
 | `reload-nginx-after-cert-renewal.sh` | Certbot deploy hook; reloads the `nginx` container after a renewal. |
 
 The refresh scripts exist because hand-copying a secret through a
@@ -437,6 +594,7 @@ bash tests/verify-securevault-api-env.sh     # API + scheduler read only securev
 bash tests/verify-securevault-fpm-socket.sh  # FastCGI only over unix sockets; only the API and nginx mount them
 bash tests/verify-dayandyou-api-origin.sh    # api-origin-staging: secret/viewer gate, viewer-keyed throttles, include
 bash tests/verify-dayandyou-api-env.sh       # API services read only staging.env (required: false), no forwarded names
+bash tests/verify-env-ssm.sh                 # env backup split + exact round trip, 4096-byte refusal, no value echoed, temp files cleaned
 ```
 
 `verify-container-log-limits.sh` asserts per service rather than grepping for
