@@ -424,9 +424,11 @@ so each value can be at most 4096 bytes):
   rights, so a hash there would fingerprint the file. The file's sha256 is
   inside the encrypted main value. The description names the path. A value
   never goes into a tag, a description, a command line (the scripts pass it as
-  `file://` from a `0700` temp dir under `/dev/shm` when the host has it,
-  else `$TMPDIR` or `/tmp`, removed on every exit), or the
-  output. The scripts print only names, byte sizes, versions and hashes.
+  `file://` from a `0700` temp dir, removed on every exit the shell sees), or
+  the output. The temp dir is under `$TMPDIR` when it is set, else
+  `/dev/shm` when writable, else `/tmp` (under `sudo`, as the deploys run
+  it, `TMPDIR` is reset, so `/dev/shm`). `env-edit.sh` puts `/dev/shm`
+  first, then `$TMPDIR`, then `/tmp`. The scripts print only names, byte sizes, versions and hashes.
   AWS error text is cut down to the error code, because it can quote the request.
 
 The per-service read profiles must **not** get `/env/*`. A parameter there
@@ -444,7 +446,11 @@ console) with this inline policy and nothing else. The scripts call only
 `PutParameter`, `GetParameter` and `AddTagsToResource`; `GetParameters` and
 `ListTagsForResource` are there for a manual check. No KMS statement is
 needed: the AWS-managed `aws/ssm` key's policy already allows in-account
-principals to use it through SSM.
+principals to use it through SSM. `env-edit.sh` also calls
+`sts:GetCallerIdentity` and refuses unless the ARN ends in
+`:user/env-backup-temp`. That call needs no IAM permission, so the user name
+must stay exactly `env-backup-temp` (the constant `ENVSSM_WRITER_USER` in
+`scripts/lib/env-ssm-lib.sh`).
 
 ```json
 {
@@ -482,9 +488,16 @@ otherwise.
 ```bash
 cd /opt/homelab-infra
 scripts/env-to-ssm.sh --dry-run all                          # names, sizes, headroom; no AWS call
-scripts/env-to-ssm.sh --profile env-backup-temp all          # write, read back, compare sha256
+scripts/env-to-ssm.sh --profile env-backup-temp all          # write, read back, compare sha256 (canonical services skipped)
 scripts/env-to-ssm.sh --profile env-backup-temp --verify-only all   # later: does SSM still match the files?
 ```
+
+The family and memorial APIs are never backed up this way: `/env` is their
+source (see "Env files from SSM"). Writing the host file over it would
+silently revert an `env-edit.sh` change that the next deploy has not pulled
+yet. A backup of either refuses, and `all` skips both with a note.
+`--dry-run` and `--verify-only` still work for them. `--verify-only` tells
+whether the host file still equals `/env`.
 
 A backup reads both parameters back, reassembles them and compares the sha256
 with the file. Any mismatch, a missing required file, or an oversize part
@@ -495,18 +508,22 @@ refuses that pair, because its hash disagrees with the one in the main part.
 Re-run the backup, or restore the previous pair by version (below). Each run
 prints both versions. They stay equal only while every run wrote both parts.
 
-**Rotation:** after any change to one of these files (a refresh script, a
-redeploy that rewrites it, a rotated key), re-run the backup for that
-service. `--verify-only all` shows which backups are stale.
+**Rotation:** after any change to one of the backed-up files (a refresh
+script, a redeploy that rewrites it, a rotated key), re-run the backup for
+that service. `--verify-only all` shows which backups are stale. For the two
+canonical services it works the other way round: change `/env` with
+`env-edit.sh`, and the deploy changes the file.
 
 ### Restore drill
 
-Restore into a scratch path and compare hashes. Never `cat` the file.
+Restore into a scratch path and compare hashes. Never `cat` the file. The
+restore prints the versions it read. `--print-sha` adds the file's sha256,
+for drills only; the deploys never pass it.
 
 ```bash
-D=$(mktemp -d)                                               # 0700
-scripts/ssm-to-env.sh --profile env-backup-temp --target "$D/api.env" family-media/api
-sudo sha256sum /opt/secrets/family-media/api-laravel.env     # must equal the printed sha256
+D=$(mktemp -d /dev/shm/drill.XXXXXX)                         # 0700, RAM
+scripts/ssm-to-env.sh --profile env-backup-temp --print-sha --target "$D/api.env" securevault/api
+sudo sha256sum /opt/secrets/securevault/api.env              # must equal the printed sha256
 rm -rf "$D"
 ```
 
@@ -533,8 +550,11 @@ The restore refuses to write anything if the reassembled file does not match
 the sha256 recorded at backup. It writes a `0600` temp file in the target's
 directory and `mv`s it into place. With `--force`, the replaced file is first
 copied to a `0600` `<target>.bak-<UTC timestamp>` with its owner, using the
-same naming as the refresh scripts, whose next rotation prunes it. Delete it
-once the restore is confirmed. Owner and mode: `--owner`/`--mode` when given,
+same naming as the refresh scripts. Nothing prunes it unless
+`--keep-one-backup` is given (the deploys give it: every older
+`<target>.bak-<UTC timestamp>` is removed after the replace). Delete it once
+the restore is confirmed. `--if-changed` leaves a file with the same content
+alone, even if its owner or mode drifted; fix those by hand. Owner and mode: `--owner`/`--mode` when given,
 else those of the replaced file, else the invoking user (`SUDO_USER` under
 sudo) and `0600`. Neither a given nor an inherited mode may give "other" any
 access: `--mode 0644` is refused, and an inherited `0644` becomes `0640` (and
@@ -570,29 +590,45 @@ The table is `ENVSSM_CANONICAL` in `scripts/lib/env-ssm-lib.sh`.
 
 ```bash
 sudo env PATH="$PATH" AWS_SHARED_CREDENTIALS_FILE=/home/ubuntu/.aws/credentials AWS_CONFIG_FILE=/home/ubuntu/.aws/config \
-  scripts/ssm-to-env.sh --profile <read profile> --target <host file> --force --if-changed --keep-one-backup <service>
+  scripts/ssm-to-env.sh --profile <read profile> --target <host file> --force --if-changed --keep-one-backup --check-shape <service>
 ```
 
+It reads the current version of both parts first (no decryption) and then
+fetches exactly those versions, so the two parts always belong together and
+the log can name them.
+
 - **Fail closed.** If either part cannot be read, or the reassembled file
-  does not match its recorded sha256, the deploy stops with "…; nothing was
-  changed". That happens before the image pull, preflight, dump, migration
-  and swap. The host file is left byte for byte as it was.
+  does not match its recorded sha256, or it is not blank lines, comments and
+  `KEY=value` only (`--check-shape`, checked on the staged copy, line numbers
+  only), the deploy stops with "…; nothing was changed". That happens before the image pull, preflight, dump, migration
+  and swap. The host file is left byte for byte as it was, with no `.bak`. The deploy's
+  own shape check still runs afterwards, as a second line.
 - **Identical file.** A host file that already equals `/env` is not touched:
-  no rewrite, no `.bak`, owner and mode unchanged. The rest of the deploy runs
-  exactly as before.
+  no rewrite, no `.bak`, owner and mode unchanged (a drifted owner or mode is
+  not fixed either). The log says `<file> unchanged (/env/<svc> vN,
+  /env/<svc>-pem vM)`. The rest of the deploy runs exactly as before.
 - **Changed file.** The new file is installed atomically with the old file's
   owner and mode, and the old file becomes `<file>.bak-<UTC stamp>`. Every
   older `<file>.bak-<UTC stamp>` is removed, so exactly one remains. This is
   the refresh scripts' rotation. Other names, such as `.bak-manual`, are left
-  alone.
+  alone. The log says `changed: installed <file> from /env/<svc> vN,
+  /env/<svc>-pem vM, <bytes> bytes (hash verified)`.
+- **Rollback.** If the release fails readiness after the swap and the pull
+  had replaced the file, the rollback first puts the `.bak` back (`0600`, the
+  file's owner), so the previous release runs with the env it ran with. It
+  prints a `WARNING`: the host file now differs from `/env` until that is
+  fixed with `env-edit` and redeployed.
 - Then `scripts/env-ssm-mirror-check.sh` compares the per-key parameters
   (below) with the pulled file. It never changes anything and never fails the
   deploy.
 - The deploys no longer run `refresh-family-media-secrets.sh`,
   `refresh-memorial-secrets.sh` or `refresh-memorial-laravel-secrets.sh`.
-- `ssm-to-env.sh` prints the file's sha256 into the deploy log (the
-  memorial's streams to GitHub Actions). The sha256 of a file full of random
-  secrets does not reveal them. It only shows whether the file changed.
+  Those scripts, and `refresh-memorial-aws-credentials.sh`, now refuse the two
+  canonical files before fetching anything (`secretlib_refuse_canonical` in
+  `scripts/lib/secret-file-lib.sh`, which takes the paths from the env-ssm
+  service table and also catches a symlink to them).
+- No hash of the env file reaches the deploy log (the memorial's streams to
+  GitHub Actions): only versions, byte counts and "hash verified".
 
 **Edit.** `scripts/env-edit.sh` is the only way to change these files. Run it
 as `ubuntu` on the host, with the temporary writer credential (see "Writer
@@ -600,31 +636,53 @@ credential (temporary)"; create it for the edit and remove it afterwards):
 
 ```bash
 cd /opt/homelab-infra
-EDITOR='vim -n -i NONE' scripts/env-edit.sh --profile env-backup-temp family-media/api   # -n -i NONE: no swap or viminfo copy
-scripts/env-edit.sh --profile env-backup-temp --from-file /dev/shm/new.env aiqiuqi-memorial/api   # scripted, no prompt
+scripts/env-edit.sh --profile env-backup-temp family-media/api                          # $EDITOR, then asks
+scripts/env-edit.sh --profile env-backup-temp --from-file /dev/shm/new.env --yes aiqiuqi-memorial/api   # scripted
 ```
 
 It does these steps in order:
 
-1. Fetches the latest pair into a `0700` directory under `/dev/shm` and checks
-   its sha256.
-2. Opens the plain file in `$EDITOR`, or takes `--from-file`.
-3. Refuses: a CR byte, a `#env-ssm` line, a line that is not blank, a comment
-   or `KEY=value` (no `export`, the same rule as the deploy's shape check), a
-   key repeated more often than it already was, an empty file, and either part
-   over 4096 bytes after the split. Refusals name line numbers and keys only.
-4. Prints the key names that were added, removed or changed. It never prints
+1. Confirms with `aws sts get-caller-identity` that the profile is the IAM
+   user `env-backup-temp`. This needs no IAM permission. Any other identity is
+   refused before anything is read.
+2. Reads both parts' current versions and fetches exactly those into a
+   `0700` directory under `/dev/shm`, and checks the sha256.
+3. Opens the plain file in `$EDITOR`, or takes `--from-file`. A
+   `--from-file` source readable by group or others is refused, and env-edit
+   reminds you to delete the source. The editor runs with `HOME`,
+   `XDG_STATE_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` inside the work
+   directory. vi, vim and nvim also get `-n -i NONE '+set noundofile nobackup
+   nowritebackup'`: no swap, viminfo/shada, undo or backup copy of the
+   plaintext.
+4. Refuses: a CR byte, a `#env-ssm` line, a line that is not blank, a comment
+   or `KEY=value` (no `export`; `envssm_check_shape`, the same rule as the
+   deploy's shape check), a key repeated more often than it already was, an
+   empty file, and either part over 4096 bytes after the split. Refusals name
+   line numbers and keys only.
+5. Prints the key names that were added, removed or changed. It never prints
    a value.
-5. Asks for confirmation. With `--from-file` there is no prompt.
-6. Refuses if the pair changed since step 1, so another edit is never undone.
-7. Writes `-pem`, then the main part, with the same code and format as
+6. When the edit touches `FM_HANDOFF_KEY_ID` or `FM_HANDOFF_PRIVATE_KEY_PEM`
+   (family) or `MEMORIAL_HANDOFF_PUBLIC_KEYS` (memorial), it fetches the other
+   service's pair (the writer can read both). It derives the public key from
+   family's private key with `openssl` and refuses unless that key and
+   family's kid are both in memorial's list. Refusals name keys only.
+   `--allow-handoff-mismatch` overrides; the rotation below never needs it.
+7. Asks for confirmation. `--yes` skips the prompt, with `--from-file` only.
+8. Re-reads both versions and refuses if either moved since step 2, so
+   another edit is never undone. SSM has no conditional write, so a write
+   landing between this check and the put (well under a second) is not
+   caught. The printed versions and the next deploy's log show it.
+9. Writes `-pem`, then the main part, with the same code and format as
    `env-to-ssm.sh`.
-8. Reads both parts back and checks the sha256.
-9. Prints the new versions.
+10. Reads both parts back and checks the sha256.
+11. Prints the new versions.
 
-The temp directory is removed on every exit path. The writer must be passed
-as `--profile`: `AWS_PROFILE` is ignored, and the read profiles are refused.
-Only the services in the table above are accepted.
+The work directory is removed on every exit the shell sees, an interrupt
+included. A `SIGKILL` (or a crash of the host) skips that: the plaintext stays
+in `/dev/shm/env-ssm.*` until the next reboot. Check for leftovers with
+`ls -d /dev/shm/env-ssm.*` after an aborted session, and `rm -rf` them. The
+writer must be passed as `--profile`: `AWS_PROFILE` is ignored, and the read
+profiles are refused. Only the services in the table above are accepted.
 
 The host file changes at the next deploy. To apply an edit now, without a
 release:
@@ -638,9 +696,9 @@ docker compose up -d --no-deps --force-recreate memorial-api-laravel memorial-ap
 For the family API, use `family-ssm`, `family-media/api` and
 `family-api-laravel`.
 
-Do not hand-edit the host file, and do not run the refresh scripts against
-it. The next deploy replaces the file with `/env` and the change is lost (its
-`.bak` keeps it until the deploy after).
+Do not hand-edit the host file. The next deploy replaces it with `/env` and
+the change is lost (its `.bak` keeps it until the deploy after). The refresh
+scripts refuse it.
 
 ### Per-key parameters
 
@@ -670,7 +728,11 @@ them:
 - The rotation tooling, for example `refresh-memorial-aws-credentials.sh`,
   which reads `API_AWS_*` (written into the file by hand until now).
 
-They are no longer read into these two files. `env-ssm-mirror-check.sh` runs
+They are no longer read into these two files. The read profiles
+(`family-ssm`, `memorial-ssm`) must keep their per-key read grants
+(`/family-media/prod/*`, `/aiqiuqi-memorial/preview/*`) for the mirror check;
+the new `/env` grant is added next to them, not instead of them.
+`env-ssm-mirror-check.sh` runs
 in every deploy and prints a `WARNING` naming the key and the parameter when
 a mirror differs from the pulled file, or cannot be read. `/env` still wins,
 and the deploy goes on. `env-edit` reminds you when you change a mirrored key.
@@ -693,6 +755,8 @@ stale.
    key, and so on.
 
 **Handoff key pair (family signs, memorial verifies):**
+
+Each step passes env-edit's cross-check without an override:
 
 1. Add the new public key to `MEMORIAL_HANDOFF_PUBLIC_KEYS` (memorial
    `env-edit` and its mirror), and deploy the memorial.
@@ -736,15 +800,19 @@ than the `family-ssm` and `memorial-ssm` users. So:
    rm -rf "$D"
    ```
 
+   These commands run from `main`, before the merge, whose `ssm-to-env.sh`
+   prints the sha256 by default. (After the merge, add `--print-sha`.)
    If a printed sha256 differs from the live file, the version 1 backup is
    stale. A refresh or a hand edit happened since the backup was taken.
-   Re-run `scripts/env-to-ssm.sh --profile env-backup-temp <service>` before
-   merging, or the first deploy installs the older file. Otherwise the first
-   deploy of each service reports "unchanged".
+   Re-run `scripts/env-to-ssm.sh --profile env-backup-temp <service>` from
+   `main` before merging. After the merge it refuses canonical services; use
+   `env-edit.sh --from-file` with an owner-only copy of the live file
+   instead. Otherwise the first deploy installs the older file. When they
+   match, the first deploy of each service reports "unchanged".
 2. **Merge** this branch.
 3. **Family.** Run a deploy on the host (the gate or
    `scripts/deploy-family-api-laravel.sh <sha>`). Expect "already matches …
-   unchanged" and `mirrors: 2 match, 0 differ`.
+   unchanged (…/api v1, …/api-pem v1)" and `mirrors: 2 match, 0 differ`.
 4. **Memorial.** Deploy through the normal GitHub dispatch of
    memorial-api's `deploy.yml`. Expect "unchanged". Any mirror `WARNING`
    (for example, the `API_AWS_*` mirrors were never synced with the file)
@@ -761,7 +829,7 @@ than the `family-ssm` and `memorial-ssm` users. So:
   ```bash
   D=$(mktemp -d /dev/shm/envrb.XXXXXX)
   scripts/ssm-to-env.sh --profile env-backup-temp --version N --target "$D/old.env" family-media/api
-  scripts/env-edit.sh --profile env-backup-temp --from-file "$D/old.env" family-media/api
+  scripts/env-edit.sh --profile env-backup-temp --from-file "$D/old.env" --yes family-media/api
   rm -rf "$D"
   ```
 
@@ -775,19 +843,19 @@ than the `family-ssm` and `memorial-ssm` users. So:
 | `docker-prune.sh` | Keeps, per service, the image `.env` pins plus the newest `IMAGE_KEEP_GOOD` (default 3) known-good releases from `.image-pins/`. Removes every other image of the repositories it manages, plus dangling layers. That is the rollback window. It removes nothing while any service is unpinned or any current pin does not resolve to a local image, runs under the pins lock, never touches other repositories, exits non-zero if a repository cannot be listed, and `DRY_RUN=1` previews. Meant to replace each product's age-based `docker image prune -af --filter until=48h`, which deletes other products' previous releases; no product calls it yet (Rollout step 4). |
 | `image-pins.sh` | `seed`, `check`, `get`, `promote`, `rollback <svc> <bad sha>`: the only writer of the pinned image values (see Images and tags). A lock left by a killed run is cleared automatically. |
 | `refresh-dayandyou-api-secrets.sh <staging\|prod>` | Writes the Day and You Laravel API's whole env file, `/opt/secrets/dayandyou-api/<env>.env`, from SSM `/dayandyou-api/<env>/*` (profile `dayandyou-api-ssm`). Refuses a missing required key, an unknown extra one, a prod `SITE_PASSWORD`, a partial `FRONTEND_REBUILD_*` set, or a value of the wrong shape (test vs live Stripe key, `APP_KEY`, URLs, minimum lengths, line breaks or single quotes). Values are written `KEY='value'`, which Compose's `env_file` takes literally. Run by the API deploy on every staging deploy (`sudo -n`), creates the file on first run. |
-| `refresh-family-media-secrets.sh [file]` | Pulls the family-media handoff key id and private key from SSM `/family-media/prod/*` into the Express API's `/opt/secrets/family-media/.env` (no argument) or the Laravel API's `api-laravel.env`. No longer run by the deploy: `api-laravel.env` comes from `/env` (see "Env files from SSM"). Running it against that file now only lasts until the next deploy. |
-| `refresh-memorial-aws-credentials.sh` | Pulls the memorial API's AWS credentials from SSM Parameter Store into its env file (the media worker was retired). Superseded for `api.env` by `/env` (see "Per-key parameters"): rotate with `env-edit.sh`. |
+| `refresh-family-media-secrets.sh [file]` | Pulls the family-media handoff key id and private key from SSM `/family-media/prod/*` into the Express API's `/opt/secrets/family-media/.env` (its only target). Refuses the Laravel API's `api-laravel.env`, which comes from `/env` (see "Env files from SSM"). |
+| `refresh-memorial-aws-credentials.sh` | Pulls the memorial API's AWS credentials from SSM Parameter Store into its env file (the media worker was retired). Refuses `api.env`, which comes from `/env` (see "Per-key parameters"): rotate with `env-edit.sh`. |
 | `refresh-securevault-secrets.sh` | Writes SecureVault's whole env file, `/opt/secrets/securevault/api.env`, from SSM `/securevault/prod/*` (profile `securevault-ssm`), deriving `ALLOWED_EXTENSION_ORIGINS` from `EXTENSION_IDS`. Refuses a missing required key, an unknown extra one, a partial `GOOGLE_*` set, `PHOTO_S3_*` without `OBJECT_STORE`, or a value of the wrong shape (secret lengths, WebAuthn RP ID and origins, URLs, SMTP port, extension ids, line breaks or single quotes). Written `KEY='value'`. Run by SecureVault's deploy on every backend deploy (`sudo -n`); creates the file on first run. |
-| `refresh-memorial-secrets.sh` | Pulls the CloudFront media signing key pair and the family-media handoff settings from SSM into the memorial API env file, and writes the constant `MEMORIAL_HANDOFF_TENANT=aiqiuqi`. No longer run by the deploy (see "Env files from SSM"). |
-| `refresh-memorial-laravel-secrets.sh` | Writes the Laravel memorial API's `APP_KEY` (SSM `/aiqiuqi-memorial/preview/APP_KEY`) into the same api.env; refuses anything but `base64:` + 32 bytes. No longer run by the deploy (see "Env files from SSM"). |
+| `refresh-memorial-secrets.sh` | Pulls the CloudFront media signing key pair and the family-media handoff settings from SSM into the memorial API env file, and writes the constant `MEMORIAL_HANDOFF_TENANT=aiqiuqi`. Refuses `api.env`, which comes from `/env` (see "Env files from SSM"); no deploy runs it. |
+| `refresh-memorial-laravel-secrets.sh` | Writes the Laravel memorial API's `APP_KEY` (SSM `/aiqiuqi-memorial/preview/APP_KEY`) into the same api.env; refuses anything but `base64:` + 32 bytes. Refuses `api.env`, which comes from `/env` (see "Env files from SSM"); no deploy runs it. |
 | `family-deploy-gate.sh` | The forced command of the family-media-api deploy key, installed as `/usr/local/sbin/family-deploy-gate` (see "Family API on Laravel"). Allows only `deploy-family-api-laravel <release sha> <homelab sha>`, and only when the homelab sha is origin/main's tip; fast-forwards to it and hands over to the next script. |
 | `deploy-family-api-laravel.sh` | The Laravel family-media deploy on the host: whole `api-laravel.env` from `/env/family-media/api` (fail closed), mirror check, env-file shape, pull, preflight, pre-migration dump (root `0700` `/opt/backups/family-media-premigrate`, files `0600` from creation, verified with `pg_restore --list`, 14 days), migration, swap, readiness of both FPM pools, pin, image cleanup. Rolls an unready release back to the pinned one. |
 | `memorial-deploy-gate.sh` | The forced command of the memorial-api deploy key, installed as `/usr/local/sbin/memorial-deploy-gate` (see "Memorial API on Laravel"). Allows only `deploy-memorial-api-laravel <release sha> <homelab sha>`, and only when the homelab sha is origin/main's tip; fast-forwards to it and hands over to the next script. |
 | `deploy-memorial-api-laravel.sh` | The Laravel memorial deploy on the host: whole `api.env` from `/env/aiqiuqi-memorial/api` (fail closed), mirror check, env-file shape, pull, preflight, pre-migration dump, migration, swap of both services, readiness of both FPM pools, pin, prune. Rolls an unready release back to the previous one. |
 | `refresh-zenvora-admin-secrets.sh` | Pulls zenvora-admin's 14 secrets from SSM into its env file: GitHub App credentials, SES SMTP credentials, token-encryption key, whitelisted user ID, plus three tokens for external read-only APIs (a fine-grained GitHub alert-check PAT covering all ZenvoraAI-owned tracked repos, a classic PAT for GHCR package listing since neither GitHub Apps nor fine-grained PATs expose an org-level Packages permission, and a Cloudflare API token scoped to the three onboarded zones for the traffic/security-events panel). Same pattern as the memorial scripts, for the same reason. |
-| `env-to-ssm.sh [--dry-run\|--verify-only] <service\|all>` | Backs up a whole env file into SSM `/env/<service>` and `/env/<service>-pem` (SecureString, Standard tier), then reads both back and checks the sha256 (see "Env backups in SSM"). Needs an explicit `--profile` or `AWS_PROFILE`. |
-| `ssm-to-env.sh [--target path] [--force [--if-changed] [--keep-one-backup]] [--version N] <service>` | Restores an env file from those two parameters, atomically, after checking the sha256 recorded at backup. Refuses to overwrite a non-empty file without `--force`, and with it keeps a `0600` `.bak-<timestamp>`. `--if-changed` leaves an identical file alone; `--keep-one-backup` prunes older `.bak-<timestamp>` files. `--version` restores an older pair. |
-| `env-edit.sh --profile WRITER [--from-file F] <service>` | Edits a canonical env file in SSM (family and memorial APIs only): fetch and verify, `$EDITOR`, validate, key-names-only diff, confirm, write in the env-to-ssm format, read back (see "Env files from SSM"). |
+| `env-to-ssm.sh [--dry-run\|--verify-only] <service\|all>` | Refuses (and `all` skips) the canonical family and memorial files in backup mode. Backs up a whole env file into SSM `/env/<service>` and `/env/<service>-pem` (SecureString, Standard tier), then reads both back and checks the sha256 (see "Env backups in SSM"). Needs an explicit `--profile` or `AWS_PROFILE`. |
+| `ssm-to-env.sh [--target path] [--force [--if-changed] [--keep-one-backup]] [--check-shape] [--print-sha] [--version N] <service>` | Restores an env file from those two parameters (at the versions read first), atomically, after checking the sha256 recorded at backup. Refuses to overwrite a non-empty file without `--force`, and with it keeps a `0600` `.bak-<timestamp>`. `--if-changed` leaves an identical file alone; `--keep-one-backup` prunes older `.bak-<timestamp>` files; `--check-shape` refuses a stored file that is not `KEY=value` before touching the target; `--print-sha` adds the file's sha256 (drills only). `--version` restores an older pair. |
+| `env-edit.sh --profile WRITER [--from-file F [--yes]] [--allow-handoff-mismatch] <service>` | Edits a canonical env file in SSM (family and memorial APIs only): writer identity check, fetch and verify, `$EDITOR`, validate, key-names-only diff, handoff cross-check, confirm, version-race check, write in the env-to-ssm format, read back (see "Env files from SSM"). |
 | `env-ssm-mirror-check.sh --profile P <service> <file>` | Run by those two deploys: warns, by name, when a per-key mirror parameter differs from the pulled file. Never changes or fails anything. |
 | `reload-nginx-after-cert-renewal.sh` | Certbot deploy hook; reloads the `nginx` container after a renewal. |
 
@@ -817,8 +885,8 @@ repository, not of a live deployment:
 bash tests/verify-container-log-limits.sh    # every service bounds its log
 bash tests/verify-email-rate-limits.sh       # nginx limits + TRUST_PROXY reaches the container
 bash tests/verify-certbot-webroot.sh         # the webroot renewal path is intact
-bash tests/verify-memorial-credential-refresh.sh  # the refresh script refuses a bad value
-bash tests/verify-memorial-laravel-secret-refresh.sh  # only a 32-byte APP_KEY is written, nothing echoed
+bash tests/verify-memorial-credential-refresh.sh  # refuses the canonical api.env before fetching
+bash tests/verify-memorial-laravel-secret-refresh.sh  # refuses the canonical api.env before fetching
 bash tests/verify-memorial-api-laravel.sh    # Laravel memorial FPM only over its socket volume; client IP only from $remote_addr
 bash tests/verify-memorial-laravel-deploy.sh  # nothing swapped before preflight+dump+migrate; unready release rolled back, never pinned
 bash tests/verify-memorial-deploy-gate.sh    # the deploy key runs one command, from the approved homelab main tip only
@@ -826,7 +894,7 @@ bash tests/verify-family-api-laravel.sh      # Laravel family FPM only over its 
 bash tests/verify-family-api-origin.sh       # family-api.valtou.com: secret/viewer gate before limit_req, viewer-keyed throttles, only /api/
 bash tests/verify-family-laravel-deploy.sh   # nothing swapped before preflight+dump+migrate; unready release rolled back, never pinned
 bash tests/verify-family-deploy-gate.sh      # the family deploy key runs one command, from the approved homelab main tip only
-bash tests/verify-family-media-secret-refresh.sh  # the handoff refresh writes only .env or api-laravel.env
+bash tests/verify-family-media-secret-refresh.sh  # the handoff refresh writes only Express's .env, refuses api-laravel.env
 bash tests/verify-zenvora-admin-secret-refresh.sh  # rotation accepts short non-secrets, still refuses short secrets
 bash tests/verify-dayandyou-api-secret-refresh.sh  # exact KEY='value' file, every shape rule refuses, no value echoed
 bash tests/verify-securevault-secret-refresh.sh  # same for SecureVault, plus derived extension origins
@@ -845,7 +913,8 @@ bash tests/verify-securevault-fpm-socket.sh  # FastCGI only over unix sockets; o
 bash tests/verify-dayandyou-api-origin.sh    # api-origin-staging: secret/viewer gate, viewer-keyed throttles, include
 bash tests/verify-dayandyou-api-env.sh       # API services read only staging.env (required: false), no forwarded names
 bash tests/verify-env-ssm.sh                 # env backup split + exact round trip, 4096-byte refusal, no value echoed, temp files cleaned
-bash tests/verify-env-ssm-deploy.sh          # deploys pull /env first and fail closed; env-edit round trip, names-only diff, refusals
+bash tests/verify-env-ssm-deploy.sh          # deploys pull /env first, fail closed (read, hash, staged shape), restore the .bak on rollback, no hash logged
+bash tests/verify-env-edit.sh                # env-edit identity, round trip, names-only diff, refusals, races, handoff cross-check, editor isolation
 ```
 
 `verify-container-log-limits.sh` asserts per service rather than grepping for

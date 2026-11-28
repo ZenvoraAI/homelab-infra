@@ -230,9 +230,10 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    # The file the Express service reads (DATABASE_URL, the JWT secret, the
-    # CloudFront and handoff blocks) plus APP_KEY, which
-    # scripts/refresh-memorial-laravel-secrets.sh writes into it.
+    # The whole memorial env (DATABASE_URL, the JWT secret, APP_KEY, the
+    # CloudFront and handoff blocks, the AWS credentials). Its source of truth
+    # is SSM /env/aiqiuqi-memorial/api: the deploy pulls it, edits go through
+    # scripts/env-edit.sh (README "Env files from SSM").
     env_file: &memorial-api-laravel-env-file
       - /opt/secrets/aiqiuqi-memorial/api.env
     # Literals only. api.env may still carry Express's TRUSTED_PROXY_ADDRESSES
