@@ -8,12 +8,22 @@ set -eu
 #
 #   scripts/ssm-to-env.sh --profile P --target /tmp/drill/api.env family-media/api   # drill
 #   scripts/ssm-to-env.sh --profile P --force family-media/api                        # real restore
+#   scripts/ssm-to-env.sh --profile P --version 3 --pem-version 3 --target ... svc     # older pair
+#
+# --version N reads <name>:N for the main part and, unless --pem-version says
+# otherwise, the -pem part too. The two parts' versions only stay equal while
+# every backup wrote both, so env-to-ssm.sh prints each one; a wrong pairing is
+# refused by the hash check. This is the way back from a backup that was cut
+# off between its two writes.
 #
 # The target defaults to the service's own path. An existing non-empty target
 # is refused unless --force. The new file is written to a 0600 temp file in
 # the target's directory and moved over it, so a reader never sees a partial
-# file. Owner and mode: those of the replaced file, else --owner/--mode, else
-# the invoking user (SUDO_USER under sudo) and 0600. When the target directory
+# file. With --force, the replaced file is first copied to a 0600
+# <target>.bak-<UTC timestamp> next to it (same naming as the refresh scripts,
+# whose next rotation prunes it). Owner and mode: --owner/--mode, else those of
+# the replaced file (with any access for "other" removed), else the invoking
+# user (SUDO_USER under sudo) and 0600. When the target directory
 # is not writable, the install steps run with sudo.
 
 NAME=ssm-to-env
@@ -23,7 +33,7 @@ NAME=ssm-to-env
 umask 077
 
 usage() {
-  echo "usage: $0 [--profile NAME] [--target ABSOLUTE_PATH] [--force] [--owner USER[:GROUP]] [--mode 0600] <service>" >&2
+  echo "usage: $0 [--profile NAME] [--target ABSOLUTE_PATH] [--force] [--owner USER[:GROUP]] [--mode 0600] [--version N [--pem-version M]] <service>" >&2
   echo "services: $(envssm_usage_services)" >&2
   exit 2
 }
@@ -33,6 +43,10 @@ TARGET=''
 FORCE=0
 OWNER=''
 FILE_MODE=''
+VERSION=''
+VERSION_SET=0
+PEM_VERSION=''
+PEM_VERSION_SET=0
 SERVICE=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -40,6 +54,8 @@ while [ "$#" -gt 0 ]; do
     --target) [ "$#" -ge 2 ] || usage; TARGET=$2; shift 2 ;;
     --owner) [ "$#" -ge 2 ] || usage; OWNER=$2; shift 2 ;;
     --mode) [ "$#" -ge 2 ] || usage; FILE_MODE=$2; shift 2 ;;
+    --version) [ "$#" -ge 2 ] || usage; VERSION=$2; VERSION_SET=1; shift 2 ;;
+    --pem-version) [ "$#" -ge 2 ] || usage; PEM_VERSION=$2; PEM_VERSION_SET=1; shift 2 ;;
     --force) FORCE=1; shift ;;
     -*) usage ;;
     *) [ -z "$SERVICE" ] || usage; SERVICE=$1; shift ;;
@@ -64,6 +80,17 @@ if [ -n "$FILE_MODE" ]; then
   # A secret file is never readable by "other".
   printf '%s\n' "$FILE_MODE" | grep -Eqx '0?[0-7][0-7]0' || envssm_die "--mode must be octal with no permission for others (e.g. 0600, 0640)"
 fi
+check_version() {
+  case "$1" in
+    ''|0*|*[!0-9]*) envssm_die "--version/--pem-version must be a positive integer" ;;
+  esac
+}
+[ "$VERSION_SET" -eq 0 ] || check_version "$VERSION"
+[ "$PEM_VERSION_SET" -eq 0 ] || check_version "$PEM_VERSION"
+[ -z "$PEM_VERSION" ] || [ -n "$VERSION" ] || envssm_die "--pem-version needs --version"
+[ -n "$PEM_VERSION" ] || PEM_VERSION=$VERSION
+MAIN_REF=$PARAM${VERSION:+:$VERSION}
+PEM_REF=$PARAM-pem${PEM_VERSION:+:$PEM_VERSION}
 envssm_resolve_profile "$PROFILE_ARG"
 
 TARGET_DIR=$(dirname -- "$TARGET")
@@ -88,17 +115,23 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 
-envssm_fetch "$PARAM" "$ENVSSM_WORK/main" || envssm_die "$SERVICE: reading $PARAM failed"
-envssm_fetch "$PARAM-pem" "$ENVSSM_WORK/pem" || envssm_die "$SERVICE: reading $PARAM-pem failed"
+envssm_fetch "$MAIN_REF" "$ENVSSM_WORK/main" || envssm_die "$SERVICE: reading $MAIN_REF failed"
+envssm_fetch "$PEM_REF" "$ENVSSM_WORK/pem" || envssm_die "$SERVICE: reading $PEM_REF failed"
 envssm_assemble "$ENVSSM_WORK/main" "$ENVSSM_WORK/pem" "$ENVSSM_WORK/env"
 SHA=$(envssm_sha256 "$ENVSSM_WORK/env")
 [ "$SHA" = "$ENVSSM_HDR_SHA" ] || envssm_die "$SERVICE: reassembled file does not match the sha256 recorded at backup -- nothing written"
 
-# Owner and mode: kept from the replaced file unless given.
+# Owner and mode: kept from the replaced file unless given. An inherited mode
+# loses any access for "other" and any special bit, like --mode is checked.
+EXISTING_OWNER=''
 if $SUDO test -e "$TARGET"; then
   current=$($SUDO stat -c '%u:%g %a' "$TARGET" 2>/dev/null || $SUDO stat -f '%u:%g %Lp' "$TARGET")
-  [ -n "$OWNER" ] || OWNER=${current% *}
-  [ -n "$FILE_MODE" ] || FILE_MODE=${current#* }
+  EXISTING_OWNER=${current% *}
+  [ -n "$OWNER" ] || OWNER=$EXISTING_OWNER
+  if [ -z "$FILE_MODE" ]; then
+    FILE_MODE=$(printf '%o' $(( 0${current#* } & 0770 )))
+    [ "$FILE_MODE" = "${current#* }" ] || echo "$NAME: $TARGET was mode ${current#* }; the restored file gets $FILE_MODE (no access for others)"
+  fi
 fi
 if [ -z "$OWNER" ]; then
   invoker=${SUDO_USER:-$(id -un)}
@@ -111,7 +144,18 @@ $SUDO chmod 600 "$STAGED"
 $SUDO tee "$STAGED" <"$ENVSSM_WORK/env" >/dev/null || envssm_die "writing the temp file failed"
 $SUDO chown "$OWNER" "$STAGED" || envssm_die "chown $OWNER failed -- nothing written"
 $SUDO chmod "$FILE_MODE" "$STAGED" || envssm_die "chmod $FILE_MODE failed -- nothing written"
+BACKUP=''
+if [ -n "$EXISTING_OWNER" ]; then
+  # Same steps as secretlib_rotate_backup: created 0600 directly, never a
+  # window at the umask's default mode. No pruning here: the file being
+  # replaced may be the only copy of something.
+  BACKUP="$TARGET.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+  ! $SUDO test -e "$BACKUP" || envssm_die "$BACKUP already exists -- wait a second and rerun; nothing written"
+  $SUDO install -m 600 "$TARGET" "$BACKUP" || envssm_die "backing up $TARGET failed -- nothing written"
+  $SUDO chown "$EXISTING_OWNER" "$BACKUP" || envssm_die "chown of $BACKUP failed -- nothing written"
+fi
 $SUDO mv -f "$STAGED" "$TARGET" || envssm_die "moving the temp file into place failed"
 STAGED=''
+[ -z "$BACKUP" ] || echo "$NAME: $SERVICE: previous file kept as $BACKUP"
 
 echo "$NAME: $SERVICE: restored $TARGET $(envssm_bytes "$ENVSSM_WORK/env") bytes, sha256 $SHA (matches backup)"

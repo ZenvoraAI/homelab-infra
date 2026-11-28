@@ -98,9 +98,11 @@ put_part() { # param value_file part
     --query Version --output text
 }
 
+# No hash tag: tags are readable without decrypt rights, and a sha256 of the
+# file would fingerprint it for anyone who can list tags.
 tag_part() { # param part
   envssm_aws ssm add-tags-to-resource --resource-type Parameter --resource-id "$1" \
-    --tags "Key=env-ssm-source,Value=$SRC_PATH" "Key=env-ssm-sha256,Value=$SRC_SHA" "Key=env-ssm-part,Value=$2" \
+    --tags "Key=env-ssm-source,Value=$SRC_PATH" "Key=env-ssm-part,Value=$2" "Key=env-ssm-format,Value=1" \
     >/dev/null
 }
 
@@ -108,15 +110,15 @@ SRC="$ENVSSM_WORK/source"
 MAIN="$ENVSSM_WORK/main"
 PEM="$ENVSSM_WORK/pem"
 read_source "$SRC_PATH" "$SRC"
-envssm_build_values "$SRC" "$MAIN" "$PEM"
+envssm_build_values "$SRC" "$MAIN" "$PEM" "$SERVICE"
 SRC_SHA=$ENVSSM_SRC_SHA
 envssm_check_size "$SERVICE: $PARAM" "$MAIN"
 envssm_check_size "$SERVICE: $PEM_PARAM" "$PEM"
 
 echo "$NAME: $SERVICE: $SRC_PATH $(envssm_bytes "$SRC") bytes"
 if [ "$MODE" = dry-run ]; then
-  echo "$NAME: $SERVICE: would write $PARAM $(envssm_bytes "$MAIN") bytes"
-  echo "$NAME: $SERVICE: would write $PEM_PARAM $(envssm_bytes "$PEM") bytes ($ENVSSM_PEM_LINES long lines)"
+  echo "$NAME: $SERVICE: would write $PARAM $(envssm_bytes "$MAIN") bytes, headroom $(envssm_headroom "$MAIN")"
+  echo "$NAME: $SERVICE: would write $PEM_PARAM $(envssm_bytes "$PEM") bytes ($ENVSSM_PEM_LINES long lines), headroom $(envssm_headroom "$PEM")"
   exit 0
 fi
 

@@ -9,7 +9,10 @@
 #   /env/<service>       every line except the long ones, in file order; each
 #                        long line is replaced by a marker `#env-ssm:pem KEY`
 #   /env/<service>-pem   the long lines (a value over ENVSSM_PEM_THRESHOLD
-#                        characters or containing -----BEGIN), in file order
+#                        characters), in file order. Length only: routing
+#                        every -----BEGIN value (short public keys too) here
+#                        left too little of -pem's 4096 bytes for two private
+#                        keys.
 #
 # Both values are framed so the round trip is byte-exact, whatever the CLI or
 # SSM does with a trailing newline:
@@ -23,7 +26,9 @@
 #   #env-ssm end
 #
 # Comments, blank lines and anything that is not KEY=value are ordinary lines:
-# kept verbatim, in place. A file that already has a line starting with
+# kept verbatim, in place. A file containing a CR byte is refused: the AWS CLI
+# reads `--value file://` in text mode and turns \r\n and a lone \r into \n,
+# so such a file could never verify (checked against aws-cli 2.36.19). A file that already has a line starting with
 # `#env-ssm` is refused, so a marker can never be confused with content. The
 # -pem parameter is always written, with zero lines when nothing is long, so a
 # key removed from the file never lingers in SSM as a stale secret.
@@ -85,8 +90,16 @@ envssm_sha256() {
 
 envssm_bytes() { wc -c <"$1" | tr -d ' '; }
 
+# RAM-backed when the host has it, so the plaintext copy never reaches a disk
+# block. An explicit TMPDIR wins (the tests use it).
+ENVSSM_SHM_DIR=${ENVSSM_SHM_DIR:-/dev/shm}
+
 envssm_make_workdir() {
-  ENVSSM_WORK=$(mktemp -d "${TMPDIR:-/tmp}/env-ssm.XXXXXX") || envssm_die "cannot create a temp dir"
+  base=${TMPDIR:-}
+  if [ -z "$base" ] && [ -d "$ENVSSM_SHM_DIR" ] && [ -w "$ENVSSM_SHM_DIR" ]; then
+    base=$ENVSSM_SHM_DIR
+  fi
+  ENVSSM_WORK=$(mktemp -d "${base:-/tmp}/env-ssm.XXXXXX") || envssm_die "cannot create a temp dir"
   chmod 700 "$ENVSSM_WORK"
 }
 
@@ -122,7 +135,7 @@ envssm_split() { # src main_body pem_body
         key = substr($0, 1, RLENGTH - 1)
         sub(/^export /, "", key)
         val = substr($0, RLENGTH + 1)
-        if (length(val) > thr || index(val, "-----BEGIN") > 0) {
+        if (length(val) > thr) {
           print $0 > pem
           print "#env-ssm:pem " key > main
           n++
@@ -137,11 +150,13 @@ envssm_split() { # src main_body pem_body
 
 # Writes both framed parameter values for a source file. Sets ENVSSM_SRC_SHA,
 # ENVSSM_PEM_LINES.
-envssm_build_values() { # src main_value pem_value
-  [ -s "$1" ] || envssm_die "source file is empty -- nothing to back up"
+envssm_build_values() { # src main_value pem_value service
+  [ -s "$1" ] || envssm_die "$4: source file is empty -- nothing to back up"
   if LC_ALL=C grep -q '^#env-ssm' "$1"; then
-    envssm_die "source has a line starting with #env-ssm, which this format reserves -- refusing"
+    envssm_die "$4: source has a line starting with #env-ssm, which this format reserves -- refusing"
   fi
+  cr_lines=$(LC_ALL=C awk '/\r/ { printf "%s%d", sep, NR; sep = "," }' "$1")
+  [ -z "$cr_lines" ] || envssm_die "$4: source has a CR byte on line(s) $cr_lines, which the AWS CLI rewrites to LF -- convert the file to LF line endings first; refusing"
   ENVSSM_SRC_SHA=$(envssm_sha256 "$1")
   final_newline=1
   [ -z "$(tail -c 1 "$1")" ] || final_newline=0
@@ -161,6 +176,10 @@ envssm_build_values() { # src main_value pem_value
 
 # Fails loudly when a value would not fit a Standard parameter (no silent
 # upgrade to Advanced tier).
+envssm_headroom() { # file -> bytes left under the Standard-tier limit
+  echo $((ENVSSM_MAX_BYTES - $(envssm_bytes "$1")))
+}
+
 envssm_check_size() { # label file
   size=$(envssm_bytes "$2")
   [ "$size" -le "$ENVSSM_MAX_BYTES" ] || envssm_die "$1 would be $size bytes, over the $ENVSSM_MAX_BYTES-byte Standard-tier limit -- refusing (not using Advanced tier)"

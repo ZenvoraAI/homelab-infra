@@ -393,25 +393,34 @@ so each value can be at most 4096 bytes):
 - `/env/<service>` holds every line in file order, except the long ones.
   Each long line is replaced by a marker `#env-ssm:pem KEY`.
 - `/env/<service>-pem` holds the long lines, in order. A line is long when it is
-  `KEY=value` (or `export KEY=value`) and the value is over 512 characters or
-  contains `-----BEGIN` (CLOUDFRONT_PRIVATE_KEY, FM_HANDOFF_PRIVATE_KEY_PEM,
-  public keys too).
+  `KEY=value` (or `export KEY=value`) and the value is over 512 characters
+  (CLOUDFRONT_PRIVATE_KEY, FM_HANDOFF_PRIVATE_KEY_PEM). Routing is by length
+  only: a short public-key PEM stays in the main part. Two one-line
+  RSA-2048 private keys already make `-pem` about 3550 of its 4096 bytes.
 - Both values start with a header line and end with `#env-ssm end`. The main
   header records the file's sha256, whether it ends with a newline, and the
-  number of long lines. Comments, blank lines, CRs and lines that are not
-  `KEY=value` are kept byte for byte, so the restored file is identical to
-  the source. A file that already has a line starting with `#env-ssm` is
-  refused.
+  number of long lines. Comments, blank lines, duplicate keys and lines that
+  are not `KEY=value` are kept byte for byte and in place, so the restored
+  file is identical to the source. A file that already has a line starting
+  with `#env-ssm` is refused.
+- A file containing a CR byte is refused, in `--dry-run` too. The error names
+  the line numbers, never the content. The AWS CLI reads `--value file://` in
+  text mode and turns `\r\n` and a lone `\r` into `\n`, so such a file could
+  never verify. Convert it to LF first (and check the service still reads it).
 - `-pem` is always written, with zero lines when nothing is long. That way a
   key removed from the file never lives on in SSM as a stale secret, and a
   restore always reads exactly two parameters.
 - If either part would be over 4096 bytes, the backup refuses before
-  writing anything. It never falls back to the Advanced tier. Fix it by moving
-  a value out of the file, not by changing the tier.
-- Tags: `env-ssm-source` (the path), `env-ssm-sha256` (of the whole file) and
-  `env-ssm-part` (`main` or `pem`). The description names the path. A value
+  writing anything. It never falls back to the Advanced tier, and it never
+  splits into a third parameter. Fix it by moving a value out of the file, not
+  by changing the tier. `--dry-run` prints each part's bytes and headroom.
+- Tags: `env-ssm-source` (the path), `env-ssm-part` (`main` or `pem`) and
+  `env-ssm-format` (`1`). No hash tag: tags are readable without decrypt
+  rights, so a hash there would fingerprint the file. The file's sha256 is
+  inside the encrypted main value. The description names the path. A value
   never goes into a tag, a description, a command line (the scripts pass it as
-  `file://` from a `0700` temp dir that is removed on every exit), or the
+  `file://` from a `0700` temp dir under `/dev/shm` when the host has it,
+  else `$TMPDIR` or `/tmp`, removed on every exit), or the
   output. The scripts print only names, byte sizes, versions and hashes.
   AWS error text is cut down to the error code, because it can quote the request.
 
@@ -465,7 +474,7 @@ otherwise.
 
 ```bash
 cd /opt/homelab-infra
-scripts/env-to-ssm.sh --dry-run all                          # names and sizes, no AWS call
+scripts/env-to-ssm.sh --dry-run all                          # names, sizes, headroom; no AWS call
 scripts/env-to-ssm.sh --profile env-backup-temp all          # write, read back, compare sha256
 scripts/env-to-ssm.sh --profile env-backup-temp --verify-only all   # later: does SSM still match the files?
 ```
@@ -474,8 +483,10 @@ A backup reads both parameters back, reassembles them and compares the sha256
 with the file. Any mismatch, a missing required file, or an oversize part
 exits non-zero, and `all` names the services that failed. The others still
 run. The `-pem` part is written before the main part, so a run cut off
-between the two leaves a pair whose hashes disagree. The restore refuses that
-pair; re-run the backup.
+between the two leaves a new `-pem` beside the old main part. The restore
+refuses that pair, because its hash disagrees with the one in the main part.
+Re-run the backup, or restore the previous pair by version (below). Each run
+prints both versions. They stay equal only while every run wrote both parts.
 
 **Rotation:** after any change to one of these files (a refresh script, a
 redeploy that rewrites it, a rotated key), re-run the backup for that
@@ -499,13 +510,29 @@ refused unless `--force` is given:
 scripts/ssm-to-env.sh --profile env-backup-temp --force family-media/api
 ```
 
+An older pair, e.g. after a backup that was cut off (the versions are in the
+backup's output):
+
+```bash
+scripts/ssm-to-env.sh --profile env-backup-temp --version 3 --target "$D/api.env" family-media/api
+scripts/ssm-to-env.sh --profile env-backup-temp --version 3 --pem-version 2 --target "$D/api.env" family-media/api
+```
+
+`--version N` reads `<name>:N` for both parts; `--pem-version M` overrides
+the `-pem` part's version. A wrong pairing fails the hash check and writes
+nothing.
+
 The restore refuses to write anything if the reassembled file does not match
 the sha256 recorded at backup. It writes a `0600` temp file in the target's
-directory and `mv`s it into place. The file keeps the owner and mode of the
-file it replaces. A new file gets `--owner`/`--mode`, or else the invoking
-user (`SUDO_USER` under sudo) and `0600`. A mode that gives "other" any
-access is refused. When the target directory is not writable, the install
-steps use `sudo`. Restart the service's containers afterwards
+directory and `mv`s it into place. With `--force`, the replaced file is first
+copied to a `0600` `<target>.bak-<UTC timestamp>` with its owner, using the
+same naming as the refresh scripts, whose next rotation prunes it. Delete it
+once the restore is confirmed. Owner and mode: `--owner`/`--mode` when given,
+else those of the replaced file, else the invoking user (`SUDO_USER` under
+sudo) and `0600`. Neither a given nor an inherited mode may give "other" any
+access: `--mode 0644` is refused, and an inherited `0644` becomes `0640` (and
+is reported). When the target directory is not writable, the install steps
+use `sudo`. Restart the service's containers afterwards
 (`docker compose up -d --no-deps --force-recreate <service>`).
 
 ### Afterwards: remove the temporary credential
@@ -538,7 +565,7 @@ The next backup (rotation, drill) creates a fresh temporary user the same way.
 | `deploy-memorial-api-laravel.sh` | The Laravel memorial deploy on the host: secrets, env-file shape, pull, preflight, pre-migration dump, migration, swap of both services, readiness of both FPM pools, pin, prune. Rolls an unready release back to the previous one. |
 | `refresh-zenvora-admin-secrets.sh` | Pulls zenvora-admin's 14 secrets from SSM into its env file: GitHub App credentials, SES SMTP credentials, token-encryption key, whitelisted user ID, plus three tokens for external read-only APIs (a fine-grained GitHub alert-check PAT covering all ZenvoraAI-owned tracked repos, a classic PAT for GHCR package listing since neither GitHub Apps nor fine-grained PATs expose an org-level Packages permission, and a Cloudflare API token scoped to the three onboarded zones for the traffic/security-events panel). Same pattern as the memorial scripts, for the same reason. |
 | `env-to-ssm.sh [--dry-run\|--verify-only] <service\|all>` | Backs up a whole env file into SSM `/env/<service>` and `/env/<service>-pem` (SecureString, Standard tier), then reads both back and checks the sha256 (see "Env backups in SSM"). Needs an explicit `--profile` or `AWS_PROFILE`. |
-| `ssm-to-env.sh [--target path] [--force] <service>` | Restores an env file from those two parameters, atomically, after checking the sha256 recorded at backup. Refuses to overwrite a non-empty file without `--force`. |
+| `ssm-to-env.sh [--target path] [--force] [--version N] <service>` | Restores an env file from those two parameters, atomically, after checking the sha256 recorded at backup. Refuses to overwrite a non-empty file without `--force`, and with it keeps a `0600` `.bak-<timestamp>`. `--version` restores an older pair. |
 | `reload-nginx-after-cert-renewal.sh` | Certbot deploy hook; reloads the `nginx` container after a renewal. |
 
 The refresh scripts exist because hand-copying a secret through a
