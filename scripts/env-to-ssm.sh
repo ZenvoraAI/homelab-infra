@@ -91,21 +91,6 @@ read_source() { # path out
   sudo cat -- "$1" >"$2" || envssm_die "$SERVICE: cannot read $1 (even with sudo)"
 }
 
-put_part() { # param value_file part
-  envssm_aws ssm put-parameter --name "$1" --type SecureString --tier Standard \
-    --overwrite --value "file://$2" \
-    --description "env-ssm backup ($3 part) of $SRC_PATH" \
-    --query Version --output text
-}
-
-# No hash tag: tags are readable without decrypt rights, and a sha256 of the
-# file would fingerprint it for anyone who can list tags.
-tag_part() { # param part
-  envssm_aws ssm add-tags-to-resource --resource-type Parameter --resource-id "$1" \
-    --tags "Key=env-ssm-source,Value=$SRC_PATH" "Key=env-ssm-part,Value=$2" "Key=env-ssm-format,Value=1" \
-    >/dev/null
-}
-
 SRC="$ENVSSM_WORK/source"
 MAIN="$ENVSSM_WORK/main"
 PEM="$ENVSSM_WORK/pem"
@@ -123,22 +108,10 @@ if [ "$MODE" = dry-run ]; then
 fi
 
 if [ "$MODE" = backup ]; then
-  # -pem first: a run that dies between the two leaves the old main part,
-  # whose header hash then no longer matches -- the restore refuses it.
-  PEM_VERSION=$(put_part "$PEM_PARAM" "$PEM" pem) || envssm_die "$SERVICE: writing $PEM_PARAM failed"
-  MAIN_VERSION=$(put_part "$PARAM" "$MAIN" main) || envssm_die "$SERVICE: writing $PARAM failed"
-  tag_part "$PEM_PARAM" pem || envssm_die "$SERVICE: tagging $PEM_PARAM failed"
-  tag_part "$PARAM" main || envssm_die "$SERVICE: tagging $PARAM failed"
-  echo "$NAME: $SERVICE: wrote $PARAM $(envssm_bytes "$MAIN") bytes, version $MAIN_VERSION"
-  echo "$NAME: $SERVICE: wrote $PEM_PARAM $(envssm_bytes "$PEM") bytes ($ENVSSM_PEM_LINES long lines), version $PEM_VERSION"
+  envssm_write_pair "$SERVICE" "$PARAM" "$SRC_PATH" "$MAIN" "$PEM"
+  echo "$NAME: $SERVICE: wrote $PARAM $(envssm_bytes "$MAIN") bytes, version $ENVSSM_MAIN_VERSION"
+  echo "$NAME: $SERVICE: wrote $PEM_PARAM $(envssm_bytes "$PEM") bytes ($ENVSSM_PEM_LINES long lines), version $ENVSSM_PEM_VERSION"
 fi
 
-# Verify: what SSM returns must rebuild the file byte for byte.
-envssm_fetch "$PARAM" "$ENVSSM_WORK/got-main" || envssm_die "$SERVICE: reading back $PARAM failed"
-envssm_fetch "$PEM_PARAM" "$ENVSSM_WORK/got-pem" || envssm_die "$SERVICE: reading back $PEM_PARAM failed"
-envssm_assemble "$ENVSSM_WORK/got-main" "$ENVSSM_WORK/got-pem" "$ENVSSM_WORK/rebuilt"
-GOT_SHA=$(envssm_sha256 "$ENVSSM_WORK/rebuilt")
-if [ "$GOT_SHA" != "$SRC_SHA" ] || [ "$ENVSSM_HDR_SHA" != "$SRC_SHA" ]; then
-  envssm_die "$SERVICE: sha256 MISMATCH between $SRC_PATH and SSM -- the backup is not usable"
-fi
+envssm_read_back "$SERVICE" "$PARAM" "$SRC_SHA" "$SRC_PATH"
 echo "$NAME: $SERVICE: sha256 $SRC_SHA match"

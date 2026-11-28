@@ -25,6 +25,16 @@ set -eu
 # the replaced file (with any access for "other" removed), else the invoking
 # user (SUDO_USER under sudo) and 0600. When the target directory
 # is not writable, the install steps run with sudo.
+#
+# The deploys of the services whose /env pair is canonical (README "Env files
+# from SSM") run it with two more flags:
+#   --if-changed       a target that already has the verified content is left
+#                      alone: no rewrite, no .bak, owner and mode untouched.
+#   --keep-one-backup  after the replace, every older <target>.bak-<UTC
+#                      timestamp> is removed, so exactly one remains (the
+#                      refresh scripts' rotation, secretlib_rotate_backup).
+#                      Best effort: a failed prune is reported, not fatal,
+#                      because the new file is already in place.
 
 NAME=ssm-to-env
 # shellcheck source=scripts/lib/env-ssm-lib.sh source-path=SCRIPTDIR
@@ -33,7 +43,7 @@ NAME=ssm-to-env
 umask 077
 
 usage() {
-  echo "usage: $0 [--profile NAME] [--target ABSOLUTE_PATH] [--force] [--owner USER[:GROUP]] [--mode 0600] [--version N [--pem-version M]] <service>" >&2
+  echo "usage: $0 [--profile NAME] [--target ABSOLUTE_PATH] [--force [--if-changed] [--keep-one-backup]] [--owner USER[:GROUP]] [--mode 0600] [--version N [--pem-version M]] <service>" >&2
   echo "services: $(envssm_usage_services)" >&2
   exit 2
 }
@@ -41,6 +51,8 @@ usage() {
 PROFILE_ARG=''
 TARGET=''
 FORCE=0
+IF_CHANGED=0
+KEEP_ONE=0
 OWNER=''
 FILE_MODE=''
 VERSION=''
@@ -57,11 +69,14 @@ while [ "$#" -gt 0 ]; do
     --version) [ "$#" -ge 2 ] || usage; VERSION=$2; VERSION_SET=1; shift 2 ;;
     --pem-version) [ "$#" -ge 2 ] || usage; PEM_VERSION=$2; PEM_VERSION_SET=1; shift 2 ;;
     --force) FORCE=1; shift ;;
+    --if-changed) IF_CHANGED=1; shift ;;
+    --keep-one-backup) KEEP_ONE=1; shift ;;
     -*) usage ;;
     *) [ -z "$SERVICE" ] || usage; SERVICE=$1; shift ;;
   esac
 done
 [ -n "$SERVICE" ] || usage
+[ "$FORCE" -eq 1 ] || [ "$IF_CHANGED$KEEP_ONE" = 00 ] || envssm_die "--if-changed and --keep-one-backup need --force"
 ROW=$(envssm_service_row "$SERVICE") || usage
 [ -n "$TARGET" ] || TARGET="$ENVSSM_SECRETS_ROOT/${ROW% *}"
 PARAM="$ENVSSM_PREFIX/$SERVICE"
@@ -121,6 +136,15 @@ envssm_assemble "$ENVSSM_WORK/main" "$ENVSSM_WORK/pem" "$ENVSSM_WORK/env"
 SHA=$(envssm_sha256 "$ENVSSM_WORK/env")
 [ "$SHA" = "$ENVSSM_HDR_SHA" ] || envssm_die "$SERVICE: reassembled file does not match the sha256 recorded at backup -- nothing written"
 
+if [ "$IF_CHANGED" -eq 1 ] && $SUDO test -f "$TARGET"; then
+  # shellcheck disable=SC2024  # the copy lands in the caller's 0700 work dir
+  $SUDO cat -- "$TARGET" >"$ENVSSM_WORK/current" || envssm_die "cannot read $TARGET -- nothing written"
+  if [ "$(envssm_sha256 "$ENVSSM_WORK/current")" = "$SHA" ]; then
+    echo "$NAME: $SERVICE: $TARGET already matches $MAIN_REF (sha256 $SHA) -- unchanged"
+    exit 0
+  fi
+fi
+
 # Owner and mode: kept from the replaced file unless given. An inherited mode
 # loses any access for "other" and any special bit, like --mode is checked.
 EXISTING_OWNER=''
@@ -157,5 +181,20 @@ fi
 $SUDO mv -f "$STAGED" "$TARGET" || envssm_die "moving the temp file into place failed"
 STAGED=''
 [ -z "$BACKUP" ] || echo "$NAME: $SERVICE: previous file kept as $BACKUP"
+
+# Only names this script and the refresh scripts create: <target>.bak-<stamp>.
+prune_backups() {
+  $SUDO find "$TARGET_DIR" -maxdepth 1 -type f -name '*.bak-*' | while IFS= read -r old; do
+    case "$old" in
+      "$BACKUP") ;;
+      "$TARGET".bak-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
+        $SUDO rm -f -- "$old" || return 1
+        echo "$NAME: $SERVICE: removed older backup $old" ;;
+    esac
+  done
+}
+if [ "$KEEP_ONE" -eq 1 ] && [ -n "$BACKUP" ]; then
+  prune_backups || echo "$NAME: $SERVICE: WARNING: pruning older backups of $TARGET failed; remove them by hand" >&2
+fi
 
 echo "$NAME: $SERVICE: restored $TARGET $(envssm_bytes "$ENVSSM_WORK/env") bytes, sha256 $SHA (matches backup)"

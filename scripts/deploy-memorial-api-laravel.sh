@@ -10,7 +10,7 @@ set -euo pipefail
 #
 #   deploy-memorial-api-laravel.sh <release sha>
 #
-# Order: secrets -> env-file shape -> pull -> preflight (config, database,
+# Order: env file from SSM -> env-file shape -> pull -> preflight (config, database,
 # argon2; nothing running is touched yet) -> pre-migration dump -> migrate ->
 # swap both services -> readiness of both FPM pools and the scheduler ->
 # pin as known-good -> prune. A failure after the swap restores the previous
@@ -31,6 +31,10 @@ READY_ATTEMPTS=30
 READY_INTERVAL_SECONDS=3
 AUTH_SOCKET=/run/memorial-api-fpm/fpm-auth.sock
 AWS_PROFILE_ENV=(AWS_SHARED_CREDENTIALS_FILE=/home/ubuntu/.aws/credentials AWS_CONFIG_FILE=/home/ubuntu/.aws/config)
+# The env file's source of truth (README "Env files from SSM") and the read
+# profile that may read exactly that pair. Edits: scripts/env-edit.sh.
+ENV_SSM_SERVICE=aiqiuqi-memorial/api
+ENV_SSM_PROFILE=memorial-ssm
 
 say() { echo "deploy-memorial-api-laravel: $*"; }
 die() { echo "deploy-memorial-api-laravel: $*" >&2; exit 1; }
@@ -40,11 +44,21 @@ redact() { sed -E 's/[A-Za-z0-9+/=]{40,}/[redacted]/g'; }
 
 printf '%s' "$RELEASE_SHA" | grep -Eqx '[0-9a-f]{40}' || die "usage: $0 <40-hex release sha>"
 
-# --- secrets -------------------------------------------------------------------
-# The memorial's shared block first (the Express deploy runs the same script),
-# then APP_KEY. Both run under sudo; sudo drops the ubuntu user's AWS profiles.
-sudo env PATH="$PATH" "${AWS_PROFILE_ENV[@]}" scripts/refresh-memorial-secrets.sh
-sudo env PATH="$PATH" "${AWS_PROFILE_ENV[@]}" scripts/refresh-memorial-laravel-secrets.sh
+# --- env file from SSM ------------------------------------------------------------
+# The whole file comes from /env: APP_KEY, the CloudFront and handoff blocks
+# and the AWS credentials included. The per-key refreshes
+# (refresh-memorial-secrets.sh, refresh-memorial-laravel-secrets.sh) no longer
+# run here: they would make the file differ from /env, and the next deploy
+# would revert it.
+# Fail closed: a failed read or hash check leaves the file as it was and stops
+# here. An identical file is not touched; a replaced one is kept as the one
+# .bak. sudo drops the ubuntu user's AWS profiles, so they are passed explicitly.
+sudo env PATH="$PATH" "${AWS_PROFILE_ENV[@]}" scripts/ssm-to-env.sh --profile "$ENV_SSM_PROFILE" \
+  --target "$ENV_FILE" --force --if-changed --keep-one-backup "$ENV_SSM_SERVICE" \
+  || die "pulling $ENV_FILE from SSM /env/$ENV_SSM_SERVICE failed; nothing was changed"
+# Advisory, never fails the deploy: per-key copies kept for the memorial site and rotations.
+env "${AWS_PROFILE_ENV[@]}" scripts/env-ssm-mirror-check.sh --profile "$ENV_SSM_PROFILE" "$ENV_SSM_SERVICE" "$ENV_FILE" \
+  || say "mirror check did not run; continuing (/env is the source of truth)"
 
 # A malformed line makes compose abort with the offending line's content in its
 # error -- how a private key once reached a public log. Line numbers only.

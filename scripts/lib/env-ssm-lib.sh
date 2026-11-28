@@ -54,6 +54,41 @@ family-media/origin-secret  family-media-origin/origin-secret.map  required
 family-media/express-legacy family-media/.env                      optional
 '
 
+# Services whose /env pair is the source of truth: their deploy pulls the
+# whole file from it, and scripts/env-edit.sh is how the file is changed.
+# Each name: the read profile its deploy uses (GetParameter on exactly this
+# pair, nothing else under /env). Every other service's pair is a backup only.
+ENVSSM_CANONICAL='
+family-media/api      family-ssm
+aiqiuqi-memorial/api  memorial-ssm
+'
+
+# The read-only profiles of every service. env-edit refuses them as its
+# writer: a read profile that could write would defeat the split.
+# shellcheck disable=SC2034  # used by env-edit.sh
+ENVSSM_READ_PROFILES='family-ssm memorial-ssm securevault-ssm dayandyou-api-ssm zenvora-admin-ssm'
+
+# Per-key parameters that still hold a copy of a key in a canonical env file.
+# The copy is kept because something other than this host reads it or rotates
+# into it (README "Per-key parameters"). /env wins: the deploy only compares
+# and warns (scripts/env-ssm-mirror-check.sh), env-edit reminds.
+# <service> <env key> <per-key parameter>
+ENVSSM_MIRRORS='
+family-media/api      FM_HANDOFF_KEY_ID                    /family-media/prod/FM_HANDOFF_KEY_ID
+family-media/api      FM_HANDOFF_PRIVATE_KEY_PEM           /family-media/prod/FM_HANDOFF_PRIVATE_KEY_PEM
+aiqiuqi-memorial/api  APP_KEY                              /aiqiuqi-memorial/preview/APP_KEY
+aiqiuqi-memorial/api  CLOUDFRONT_MEDIA_KEY_PAIR_ID         /aiqiuqi-memorial/preview/CLOUDFRONT_MEDIA_KEY_PAIR_ID
+aiqiuqi-memorial/api  CLOUDFRONT_MEDIA_PRIVATE_KEY         /aiqiuqi-memorial/preview/CLOUDFRONT_MEDIA_PRIVATE_KEY
+aiqiuqi-memorial/api  MEMORIAL_HANDOFF_PUBLIC_KEYS         /aiqiuqi-memorial/preview/MEMORIAL_HANDOFF_PUBLIC_KEYS
+aiqiuqi-memorial/api  MEMORIAL_HANDOFF_AUDIENCE            /aiqiuqi-memorial/preview/MEMORIAL_HANDOFF_AUDIENCE
+aiqiuqi-memorial/api  MEMORIAL_WEB_ORIGIN                  /aiqiuqi-memorial/preview/MEMORIAL_WEB_ORIGIN
+aiqiuqi-memorial/api  MEMORIAL_SSO_FAMILY_ID               /aiqiuqi-memorial/preview/MEMORIAL_SSO_FAMILY_ID
+aiqiuqi-memorial/api  MEMORIAL_HANDOFF_ALLOWED_ORIGIN      /aiqiuqi-memorial/preview/MEMORIAL_HANDOFF_ALLOWED_ORIGIN
+aiqiuqi-memorial/api  MEMORIAL_SSO_SHARED_MEMBER_USERNAME  /aiqiuqi-memorial/preview/MEMORIAL_SSO_SHARED_MEMBER_USERNAME
+aiqiuqi-memorial/api  AWS_ACCESS_KEY_ID                    /aiqiuqi-memorial/preview/API_AWS_ACCESS_KEY_ID
+aiqiuqi-memorial/api  AWS_SECRET_ACCESS_KEY                /aiqiuqi-memorial/preview/API_AWS_SECRET_ACCESS_KEY
+'
+
 envssm_die() { echo "$NAME: $*" >&2; exit 1; }
 
 envssm_service_names() {
@@ -78,6 +113,15 @@ envssm_resolve_profile() {
   case "$ENVSSM_PROFILE" in
     *[!A-Za-z0-9._-]*) envssm_die "profile name has unexpected characters" ;;
   esac
+}
+
+envssm_is_canonical() {
+  printf '%s\n' "$ENVSSM_CANONICAL" | awk -v s="$1" 'NF == 2 && $1 == s { f = 1 } END { exit !f }'
+}
+
+# Prints "<env key> <parameter>" for each mirror of a service.
+envssm_mirrors() {
+  printf '%s\n' "$ENVSSM_MIRRORS" | awk -v s="$1" 'NF == 3 && $1 == s { print $2, $3 }'
 }
 
 envssm_sha256() {
@@ -150,13 +194,18 @@ envssm_split() { # src main_body pem_body
 
 # Writes both framed parameter values for a source file. Sets ENVSSM_SRC_SHA,
 # ENVSSM_PEM_LINES.
-envssm_build_values() { # src main_value pem_value service
-  [ -s "$1" ] || envssm_die "$4: source file is empty -- nothing to back up"
-  if LC_ALL=C grep -q '^#env-ssm' "$1"; then
-    envssm_die "$4: source has a line starting with #env-ssm, which this format reserves -- refusing"
-  fi
+# The content rules every stored file obeys (backup and env-edit alike).
+envssm_check_source() { # src label
+  [ -s "$1" ] || envssm_die "$2: source file is empty -- nothing to back up"
   cr_lines=$(LC_ALL=C awk '/\r/ { printf "%s%d", sep, NR; sep = "," }' "$1")
-  [ -z "$cr_lines" ] || envssm_die "$4: source has a CR byte on line(s) $cr_lines, which the AWS CLI rewrites to LF -- convert the file to LF line endings first; refusing"
+  [ -z "$cr_lines" ] || envssm_die "$2: source has a CR byte on line(s) $cr_lines, which the AWS CLI rewrites to LF -- convert the file to LF line endings first; refusing"
+  if LC_ALL=C grep -q '^#env-ssm' "$1"; then
+    envssm_die "$2: source has a line starting with #env-ssm, which this format reserves -- refusing"
+  fi
+}
+
+envssm_build_values() { # src main_value pem_value service
+  envssm_check_source "$1" "$4"
   ENVSSM_SRC_SHA=$(envssm_sha256 "$1")
   final_newline=1
   [ -z "$(tail -c 1 "$1")" ] || final_newline=0
@@ -239,4 +288,44 @@ envssm_assemble() { # main_value pem_value out
       if (nb > 0) { printf "%s", b[nb]; if (fnl == 1) printf "\n" }
     }
   ' "$1" >"$3" || envssm_die "the two parameters do not reassemble into an env file"
+}
+
+# --- writing a pair (env-to-ssm.sh and env-edit.sh) ------------------------
+# Values go to the CLI as file://, never on the command line (where ps would
+# show them).
+envssm_put_part() { # param value_file part src_path -> prints the version
+  envssm_aws ssm put-parameter --name "$1" --type SecureString --tier Standard \
+    --overwrite --value "file://$2" \
+    --description "env-ssm backup ($3 part) of $4" \
+    --query Version --output text
+}
+
+# No hash tag: tags are readable without decrypt rights, and a sha256 of the
+# file would fingerprint it for anyone who can list tags.
+envssm_tag_part() { # param part src_path
+  envssm_aws ssm add-tags-to-resource --resource-type Parameter --resource-id "$1" \
+    --tags "Key=env-ssm-source,Value=$3" "Key=env-ssm-part,Value=$2" "Key=env-ssm-format,Value=1" \
+    >/dev/null
+}
+
+# Writes both built values. -pem first: a run that dies between the two leaves
+# the old main part, whose header hash then no longer matches -- a restore
+# refuses it. Sets ENVSSM_MAIN_VERSION, ENVSSM_PEM_VERSION.
+# shellcheck disable=SC2034  # read by the callers
+envssm_write_pair() { # service param src_path main_value pem_value
+  ENVSSM_PEM_VERSION=$(envssm_put_part "$2-pem" "$5" pem "$3") || envssm_die "$1: writing $2-pem failed"
+  ENVSSM_MAIN_VERSION=$(envssm_put_part "$2" "$4" main "$3") || envssm_die "$1: writing $2 failed"
+  envssm_tag_part "$2-pem" pem "$3" || envssm_die "$1: tagging $2-pem failed"
+  envssm_tag_part "$2" main "$3" || envssm_die "$1: tagging $2 failed"
+}
+
+# What SSM returns must rebuild the file byte for byte. Dies otherwise.
+envssm_read_back() { # service param expected_sha what
+  envssm_fetch "$2" "$ENVSSM_WORK/got-main" || envssm_die "$1: reading back $2 failed"
+  envssm_fetch "$2-pem" "$ENVSSM_WORK/got-pem" || envssm_die "$1: reading back $2-pem failed"
+  envssm_assemble "$ENVSSM_WORK/got-main" "$ENVSSM_WORK/got-pem" "$ENVSSM_WORK/rebuilt"
+  got_sha=$(envssm_sha256 "$ENVSSM_WORK/rebuilt")
+  if [ "$got_sha" != "$3" ] || [ "$ENVSSM_HDR_SHA" != "$3" ]; then
+    envssm_die "$1: sha256 MISMATCH between $4 and SSM -- the backup is not usable"
+  fi
 }

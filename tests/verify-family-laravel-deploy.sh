@@ -4,7 +4,7 @@ set -euo pipefail
 
 # Behavioural test for scripts/deploy-family-api-laravel.sh with docker, sudo
 # and pg_dump stubbed (the sibling of verify-memorial-laravel-deploy.sh). The
-# properties: the handoff secrets are refreshed into the Laravel env file;
+# properties: the whole env file is pulled from SSM first (read profile);
 # nothing running is touched until preflight, the pre-migration dump and the
 # migration have all succeeded; a release that is not ready on both FPM pools is
 # replaced by the previous one (or stopped, on the first deploy) and never
@@ -22,7 +22,11 @@ DIGEST=sha256:$(printf '%064d' 7)
 REPO="$TMP/repo"; BIN="$TMP/bin"; LOG="$TMP/calls.log"
 mkdir -p "$REPO/scripts" "$BIN" "$TMP/secrets" "$TMP/dumps"
 cp "$ROOT/scripts/deploy-family-api-laravel.sh" "$REPO/scripts/"
-printf '#!/usr/bin/env bash\necho "refresh-family-media-secrets.sh $*" >>"$CALLS"\n' >"$REPO/scripts/refresh-family-media-secrets.sh"
+# The env pull and the mirror check log their arguments; their behaviour is
+# tested with a stubbed aws in tests/verify-env-ssm-deploy.sh.
+for s in ssm-to-env.sh env-ssm-mirror-check.sh; do
+  printf '#!/usr/bin/env bash\necho "%s $*" >>"$CALLS"\n' "$s" >"$REPO/scripts/$s"
+done
 # image-pins.sh: `get` prints STUB_PIN (unset: fails, as for an unpinned
 # variable); `promote` fails when STUB_PROMOTE_FAIL=1.
 cat >"$REPO/scripts/image-pins.sh" <<'STUB'
@@ -107,7 +111,8 @@ if OUT="$(run_deploy main)"; then fail "a non-sha release must be refused:\n$OUT
 # 2. Happy path, upgrade from PREV: every step, in order, pin last.
 valid_env
 OUT="$(STUB_PIN="$PREV@$DIGEST" run_deploy "$REL")" || fail "happy path failed:\n$OUT\n$(cat "$LOG")"
-order=("refresh-family-media-secrets.sh $ENV" "compose pull family-api-laravel" "artisan family:preflight --allow-pending"
+order=("ssm-to-env.sh --profile family-ssm --target $ENV --force --if-changed --keep-one-backup family-media/api"
+  "env-ssm-mirror-check.sh --profile family-ssm family-media/api $ENV" "compose pull family-api-laravel" "artisan family:preflight --allow-pending"
   "pg_dump --format=custom --no-owner --no-privileges family_media" "pg_restore --list" "artisan migrate --force"
   "compose up -d family-api-laravel" "fpm-auth.sock" "image-pins.sh promote family-api-laravel $REL")
 last=0
@@ -226,4 +231,4 @@ if OUT="$(run_deploy "$REL")"; then fail "a non-identifier database name must be
 called "compose pull" && fail "compose ran with an unusable DATABASE_URL"
 grep -q 'pw@' <<<"$OUT" && fail "the database URL reached the output"
 
-echo "PASS: deploy-family-api-laravel refreshes the Laravel env file, touches nothing before preflight+dump+migrate, rolls back an unready release, pins only after readiness"
+echo "PASS: deploy-family-api-laravel pulls the env file from SSM first, touches nothing before preflight+dump+migrate, rolls back an unready release, pins only after readiness"

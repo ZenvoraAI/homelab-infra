@@ -4,8 +4,8 @@ set -euo pipefail
 # Deploys one release of the Laravel family-media API (ZenvoraAI/family-media-api)
 # to family-api-laravel. Installed from family-media-api
 # deploy/host/deploy-family-api-laravel.sh (9b023ec); the one change is that the
-# handoff secrets are refreshed into the Laravel env file, not Express's .env
-# (marked "homelab:" below). Run on the host, from /opt/homelab-infra, only by
+# whole env file is pulled from SSM /env/family-media/api first (marked
+# "homelab:" below). Run on the host, from /opt/homelab-infra, only by
 # scripts/family-deploy-gate.sh -- the forced command of the family-media-api
 # deploy key (README "Family API on Laravel"), which has already checked out
 # the homelab-infra commit the deploy was approved for.
@@ -13,7 +13,7 @@ set -euo pipefail
 #
 #   deploy-family-api-laravel.sh <release sha>
 #
-# Order: secrets -> env-file shape -> pull -> preflight (config, database,
+# Order: env file from SSM -> env-file shape -> pull -> preflight (config, database,
 # handoff key; nothing running is touched yet) -> pre-migration dump ->
 # migrate -> swap -> readiness of both FPM pools -> pin as known-good -> prune.
 # A failure after the swap restores the previous release (the migration
@@ -38,6 +38,10 @@ READY_INTERVAL_SECONDS=3
 READY_PATH=/api/health/ready
 AUTH_SOCKET=/run/family-api-fpm/fpm-auth.sock
 AWS_PROFILE_ENV=(AWS_SHARED_CREDENTIALS_FILE=/home/ubuntu/.aws/credentials AWS_CONFIG_FILE=/home/ubuntu/.aws/config)
+# The env file's source of truth (README "Env files from SSM") and the read
+# profile that may read exactly that pair. Edits: scripts/env-edit.sh.
+ENV_SSM_SERVICE=family-media/api
+ENV_SSM_PROFILE=family-ssm
 
 say() { echo "deploy-family-api-laravel: $*"; }
 die() { echo "deploy-family-api-laravel: $*" >&2; exit 1; }
@@ -47,11 +51,19 @@ redact() { sed -E 's/[A-Za-z0-9+/=]{40,}/[redacted]/g'; }
 
 printf '%s' "$RELEASE_SHA" | grep -Eqx '[0-9a-f]{40}' || die "usage: $0 <40-hex release sha>"
 
-# --- secrets -------------------------------------------------------------------
-# sudo drops the ubuntu user's AWS profiles, so they are passed explicitly.
-# homelab: the handoff key goes into the file this service reads; without the
-# argument the script refreshes only Express's .env.
-sudo env PATH="$PATH" "${AWS_PROFILE_ENV[@]}" scripts/refresh-family-media-secrets.sh "$ENV_FILE"
+# --- env file from SSM ------------------------------------------------------------
+# homelab: the whole file comes from /env, the handoff keys included. The
+# per-key refresh (refresh-family-media-secrets.sh) no longer runs here: it
+# would make the file differ from /env, and the next deploy would revert it.
+# Fail closed: a failed read or hash check leaves the file as it was and stops
+# here. An identical file is not touched; a replaced one is kept as the one
+# .bak. sudo drops the ubuntu user's AWS profiles, so they are passed explicitly.
+sudo env PATH="$PATH" "${AWS_PROFILE_ENV[@]}" scripts/ssm-to-env.sh --profile "$ENV_SSM_PROFILE" \
+  --target "$ENV_FILE" --force --if-changed --keep-one-backup "$ENV_SSM_SERVICE" \
+  || die "pulling $ENV_FILE from SSM /env/$ENV_SSM_SERVICE failed; nothing was changed"
+# Advisory, never fails the deploy: per-key copies kept for the handoff partner and rotations.
+env "${AWS_PROFILE_ENV[@]}" scripts/env-ssm-mirror-check.sh --profile "$ENV_SSM_PROFILE" "$ENV_SSM_SERVICE" "$ENV_FILE" \
+  || say "mirror check did not run; continuing (/env is the source of truth)"
 
 # A malformed line makes compose abort with the offending line's content in its
 # error -- how a private key once reached a public log. Line numbers only.

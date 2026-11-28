@@ -20,7 +20,9 @@ DIGEST=sha256:$(printf '%064d' 7)
 REPO="$TMP/repo"; BIN="$TMP/bin"; LOG="$TMP/calls.log"
 mkdir -p "$REPO/scripts" "$BIN" "$TMP/secrets" "$TMP/dumps"
 cp "$ROOT/scripts/deploy-memorial-api-laravel.sh" "$REPO/scripts/"
-for s in refresh-memorial-secrets.sh refresh-memorial-laravel-secrets.sh; do
+# The env pull and the mirror check log their arguments; their behaviour is
+# tested with a stubbed aws in tests/verify-env-ssm-deploy.sh.
+for s in ssm-to-env.sh env-ssm-mirror-check.sh; do
   printf '#!/usr/bin/env bash\necho "%s $*" >>"$CALLS"\n' "$s" >"$REPO/scripts/$s"
 done
 # image-pins.sh: `get` prints STUB_PIN (unset: fails, as for an unpinned
@@ -88,7 +90,8 @@ if OUT="$(run_deploy main)"; then fail "a non-sha release must be refused:\n$OUT
 # 2. Happy path, upgrade from PREV: every step, in order, pin last.
 valid_env
 OUT="$(STUB_PIN="$PREV@$DIGEST" run_deploy "$REL")" || fail "happy path failed:\n$OUT\n$(cat "$LOG")"
-order=(refresh-memorial-secrets.sh refresh-memorial-laravel-secrets.sh "compose pull" "artisan memorial:preflight"
+order=("ssm-to-env.sh --profile memorial-ssm --target $TMP/secrets/api.env --force --if-changed --keep-one-backup aiqiuqi-memorial/api"
+  "env-ssm-mirror-check.sh --profile memorial-ssm aiqiuqi-memorial/api $TMP/secrets/api.env" "compose pull" "artisan memorial:preflight"
   "pg_dump --format=custom" "artisan migrate --force" "compose up -d memorial-api-laravel memorial-api-laravel-scheduler"
   "fpm-auth.sock" "image-pins.sh promote memorial-api-laravel $REL")
 last=0
