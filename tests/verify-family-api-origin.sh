@@ -51,6 +51,10 @@ for gate in 'if \(\$family_origin_ok != 1\) \{ return 403; \}' 'if \(\$family_cl
   [ -n "$line" ] || fail "the 443 block must refuse at server level: $gate"
   [ "$line" -lt "$first_location" ] || fail "the gate '$gate' must come before every location"
 done
+# Throttled requests must not write their raw request line (query strings) to the error log.
+grep -qE '^    error_log /var/log/nginx/error\.log error;$' <<<"$tls_block" || fail "the 443 block must log errors at level error only"
+grep -qE '^    limit_req_log_level (warn|notice|info);$' <<<"$tls_block" \
+  || fail "limit_req_log_level must be below the error_log level (rejections log the raw request line)"
 server_limit="$(printf '%s\n' "$tls_block" | grep -nE '^    limit_req[[:space:]]' | head -1 | cut -d: -f1 || true)"
 [ -z "$server_limit" ] || fail "no server-level limit_req (the gates must decide before any throttle)"
 printf '%s\n' "$tls_block" | grep -qE '^[[:space:]]*fastcgi_pass[[:space:]]' \
