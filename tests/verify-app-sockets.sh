@@ -23,7 +23,7 @@ NGINX_ROOT="${NGINX_ROOT_UNDER_TEST:-$ROOT/nginx}"
 NGINX_DIR="$NGINX_ROOT/conf.d"
 
 # service volume socket-dir vhost old-port
-APPS="api family-api-sock /run/family-api family-api.conf 4000
+APPS="api family-api-sock /run/family-api - 4000
 zenvora-admin zenvora-admin-sock /run/zenvora-admin admin.valtou.com.conf 3100"
 
 fail() { printf 'FAIL: %b\n' "$*" >&2; exit 1; }
@@ -48,7 +48,7 @@ nginx - $volume:$dir:ro
   grep -q "^  $volume: {}\$" "$COMPOSE" || fail "top-level volumes: must declare $volume"
 
   conf="$NGINX_DIR/$vhost"
-  # "-": the app runs but no vhost proxies to it any more (the Express memorial
+  # "-": the app runs but no vhost proxies to it any more (the Express family
   # API after the switch to Laravel, until it is retired); its socket rules
   # still hold.
   if [ "$vhost" != - ]; then
@@ -75,9 +75,10 @@ done <<< "$APPS"
 [ "$(printf '%s\n' "$lines" | sort)" = "$(printf '%s' "$expected" | sort)" ] \
   || fail "only each app (rw, LISTEN_SOCKET=<dir>/http.sock) and nginx (:ro) may use its socket volume; found:\n$lines"
 
-# family-media may key its login lockout on CF-Connecting-IP (CLIENT_IP_HEADER);
-# a client-sent copy reaches nginx from any loopback co-tenant.
-grep -qE '^[[:space:]]*proxy_set_header[[:space:]]+CF-Connecting-IP[[:space:]]+\$remote_addr;' "$NGINX_DIR/family-api.conf" \
-  || fail "family-api.conf must overwrite CF-Connecting-IP with \$remote_addr"
+# Since the Laravel switch family-api.valtou.com proxies nothing: the Express API
+# is reachable only through its socket, from nothing public. (Its old
+# CF-Connecting-IP rule returns with a revert of the switch.)
+sed -e 's/[[:space:]]*#.*$//' "$NGINX_DIR/family-api.conf" | grep -qE 'proxy_pass' \
+  && fail "family-api.conf must not proxy to the Express API after the Laravel switch"
 
-echo "PASS: the family, memorial and admin apps are reached only over their unix sockets; only each app and nginx mount them"
+echo "PASS: the family and admin apps are reached only over their unix sockets; only each app and nginx mount them"

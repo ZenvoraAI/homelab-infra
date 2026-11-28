@@ -12,8 +12,8 @@ release workflows remain in their own repositories.
 | Compose service | Container | Host port | Public hostnames | `mem_limit` |
 | --- | --- | ---: | --- | ---: |
 | `nginx` | `homelab-nginx` | 80 / 443 | all hosts below | 64m |
-| `api` | `homelab-family-api` | none (HTTP on a unix socket, `family-api-sock` volume) | `family-api.valtou.com` | 640m |
-| `family-api-laravel` | `homelab-family-api-laravel` | none (FastCGI on unix sockets, `family-api-fpm` volume) | none yet; `family-api.valtou.com` `/api/` once switched (CloudFront origin only, see "Family API on Laravel") | 512m |
+| `api` | `homelab-family-api` | none (HTTP on a unix socket, `family-api-sock` volume) | none since the Laravel switch | 640m |
+| `family-api-laravel` | `homelab-family-api-laravel` | none (FastCGI on unix sockets, `family-api-fpm` volume) | `family-api.valtou.com` `/api/` (CloudFront origin only, see "Family API on Laravel") | 512m |
 | `securevault-api` | `homelab-securevault-api` | none (FastCGI on a unix socket, `securevault-fpm` volume) | `api.valtou.com` | 512m |
 | `securevault-scheduler` | `homelab-securevault-scheduler` | — | none (no listener) | 256m |
 | `dayandyou-api-staging` | `homelab-dayandyou-api-staging` | none (FastCGI on unix sockets, `dayandyou-api-fpm-staging` volume) | `api-origin-staging.dayandyou.com` (CloudFront origin only) | 320m |
@@ -412,6 +412,7 @@ bash tests/verify-memorial-api-laravel.sh    # Laravel memorial FPM only over it
 bash tests/verify-memorial-laravel-deploy.sh  # nothing swapped before preflight+dump+migrate; unready release rolled back, never pinned
 bash tests/verify-memorial-deploy-gate.sh    # the deploy key runs one command, from the approved homelab main tip only
 bash tests/verify-family-api-laravel.sh      # Laravel family FPM only over its socket volume, no scheduler; client IP only from $family_client_ip
+bash tests/verify-family-api-origin.sh       # family-api.valtou.com: secret/viewer gate before limit_req, viewer-keyed throttles, only /api/
 bash tests/verify-family-laravel-deploy.sh   # nothing swapped before preflight+dump+migrate; unready release rolled back, never pinned
 bash tests/verify-family-deploy-gate.sh      # the family deploy key runs one command, from the approved homelab main tip only
 bash tests/verify-family-media-secret-refresh.sh  # the handoff refresh writes only .env or api-laravel.env
@@ -796,6 +797,19 @@ every compose command, for every product). Same procedure as the memorial
 API's first deploy, with `family-media-api-laravel:<S>` and
 `image-pins.sh promote family-api-laravel <S>`. A first deploy that fails
 readiness stops the service; nginx does not depend on it until the switch.
+
+**The origin vhost** (`conf.d/family-api.conf`, http-level parts in
+`00-family-cloudfront.conf`) serves `family-api.valtou.com` to CloudFront only,
+as the Day and You origin does: 403 at server level, before any location or
+`limit_req`, without the `X-Family-Origin-Secret` value from
+`/opt/secrets/family-media-origin/origin-secret.map` (`"<48 hex>" 1;`, root
+`0600` in a root `0700` dir; a missing file stops nginx) or without a
+`CloudFront-Viewer-Address`; the viewer IP (port stripped, IPv4 or IPv6)
+becomes `FAMILY_CLIENT_IP` and the key of `fam_cf_auth` / `fam_cf_general`;
+the argon2 routes go to the auth pool; `/api/metrics`, `/…/index.php` and
+everything outside `/api/` are 404. Rotation as for the Day and You secret (a
+second line, reload, switch CloudFront, remove the old line, reload).
+`tests/verify-family-api-origin.sh` pins it.
 
 **nginx** mounts `family-api-fpm`, `nginx/family/` and the origin-secret
 directory `/opt/secrets/family-media-origin` read-only. A running nginx sees
