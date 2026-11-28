@@ -35,11 +35,6 @@ envssm_make_workdir
 trap 'rm -rf "$ENVSSM_WORK"' EXIT
 trap 'exit 130' INT TERM HUP
 
-# The value of the last KEY= line (what Compose uses), or failure if none.
-env_value() { # key
-  LC_ALL=C awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); f = 1 } END { if (f) printf "%s", v; exit !f }' "$ENV_FILE"
-}
-
 same=0 differ=0 unread=0
 for row in $(envssm_mirrors "$SERVICE" | tr ' ' ':'); do
   key=${row%%:*}
@@ -50,7 +45,7 @@ for row in $(envssm_mirrors "$SERVICE" | tr ' ' ':'); do
     continue
   fi
   want=$(cat "$ENVSSM_WORK/mirror")
-  if have=$(env_value "$key") && [ "$have" = "$want" ]; then
+  if have=$(envssm_env_value "$ENV_FILE" "$key") && [ "$have" = "$want" ]; then
     same=$((same + 1))
   else
     echo "$NAME: WARNING: $key in $ENV_FILE (from /env/$SERVICE) differs from $param; /env wins -- update the stale side (README \"Per-key parameters\")" >&2

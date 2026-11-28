@@ -115,6 +115,57 @@ envssm_resolve_profile() {
   esac
 }
 
+# The temporary writer user (README "Writer credential (temporary)"). env-edit
+# checks the caller is that IAM user, not just a profile that says so.
+ENVSSM_WRITER_USER=env-backup-temp
+
+envssm_check_writer() {
+  arn=$(envssm_aws sts get-caller-identity --query Arn --output text) || envssm_die "cannot confirm the caller identity of profile $ENVSSM_PROFILE"
+  case "$arn" in
+    *":user/$ENVSSM_WRITER_USER") ;;
+    *) envssm_die "profile $ENVSSM_PROFILE is not the IAM user $ENVSSM_WRITER_USER -- refusing" ;;
+  esac
+}
+
+# The env-file shape the deploys enforce: blank lines, comments and
+# KEY=value only (no "export"). Prints the bad line numbers (comma-separated,
+# never content) and fails when there are any.
+envssm_check_shape() { # file
+  bad=$(LC_ALL=C awk '
+    /^[[:space:]]*($|#)/ { next }
+    !/^[A-Za-z_][A-Za-z0-9_]*=/ { printf "%s%d", sep, NR; sep = "," }
+  ' "$1")
+  [ -z "$bad" ] && return 0
+  printf '%s\n' "$bad"
+  return 1
+}
+
+# The value of the last KEY= line (what Compose uses), or failure if none.
+envssm_env_value() { # file key
+  LC_ALL=C awk -v k="$2" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); f = 1 } END { if (f) printf "%s", v; exit !f }' "$1"
+}
+
+# Fetches the latest pair of a service at the versions current right now
+# (read first, no decryption), reassembles it and checks its recorded sha256.
+# Sets ENVSSM_PAIR_V, ENVSSM_PAIR_PEM_V. Dies on any failure.
+envssm_fetch_pair() { # service out_file
+  ENVSSM_PAIR_V=$(envssm_version "$ENVSSM_PREFIX/$1") || envssm_die "$1: reading the version of $ENVSSM_PREFIX/$1 failed"
+  ENVSSM_PAIR_PEM_V=$(envssm_version "$ENVSSM_PREFIX/$1-pem") || envssm_die "$1: reading the version of $ENVSSM_PREFIX/$1-pem failed"
+  envssm_fetch "$ENVSSM_PREFIX/$1:$ENVSSM_PAIR_V" "$2.main" || envssm_die "$1: reading $ENVSSM_PREFIX/$1:$ENVSSM_PAIR_V failed"
+  envssm_fetch "$ENVSSM_PREFIX/$1-pem:$ENVSSM_PAIR_PEM_V" "$2.pem" || envssm_die "$1: reading $ENVSSM_PREFIX/$1-pem:$ENVSSM_PAIR_PEM_V failed"
+  envssm_assemble "$2.main" "$2.pem" "$2"
+  [ "$(envssm_sha256 "$2")" = "$ENVSSM_HDR_SHA" ] \
+    || envssm_die "$1: the latest pair does not match its recorded sha256 -- fix it first (ssm-to-env.sh --version); nothing written"
+}
+
+# Absolute host paths of the canonical files (for secret-file-lib's guard).
+envssm_canonical_paths() {
+  for svc in $(printf '%s\n' "$ENVSSM_CANONICAL" | awk 'NF == 2 { print $1 }'); do
+    row=$(envssm_service_row "$svc") || continue
+    printf '%s\n' "$ENVSSM_SECRETS_ROOT/${row% *}"
+  done
+}
+
 envssm_is_canonical() {
   printf '%s\n' "$ENVSSM_CANONICAL" | awk -v s="$1" 'NF == 2 && $1 == s { f = 1 } END { exit !f }'
 }
@@ -134,14 +185,20 @@ envssm_sha256() {
 
 envssm_bytes() { wc -c <"$1" | tr -d ' '; }
 
-# RAM-backed when the host has it, so the plaintext copy never reaches a disk
-# block. An explicit TMPDIR wins (the tests use it).
+# Where the plaintext copy lives. Order for env-to-ssm.sh and ssm-to-env.sh:
+# $TMPDIR when set, else /dev/shm when writable, else /tmp. (Under sudo, as
+# the deploys run it, TMPDIR is reset, so /dev/shm.) env-edit.sh passes
+# prefer-shm: /dev/shm first, then $TMPDIR, then /tmp -- an editor session
+# keeps the file around much longer, so RAM wins over a user's TMPDIR.
 ENVSSM_SHM_DIR=${ENVSSM_SHM_DIR:-/dev/shm}
 
-envssm_make_workdir() {
-  base=${TMPDIR:-}
-  if [ -z "$base" ] && [ -d "$ENVSSM_SHM_DIR" ] && [ -w "$ENVSSM_SHM_DIR" ]; then
-    base=$ENVSSM_SHM_DIR
+envssm_make_workdir() { # [prefer-shm]
+  shm=''
+  if [ -d "$ENVSSM_SHM_DIR" ] && [ -w "$ENVSSM_SHM_DIR" ]; then shm=$ENVSSM_SHM_DIR; fi
+  if [ "${1:-}" = prefer-shm ]; then
+    base=${shm:-${TMPDIR:-}}
+  else
+    base=${TMPDIR:-$shm}
   fi
   ENVSSM_WORK=$(mktemp -d "${base:-/tmp}/env-ssm.XXXXXX") || envssm_die "cannot create a temp dir"
   chmod 700 "$ENVSSM_WORK"
@@ -159,6 +216,12 @@ envssm_aws() {
     "$ENVSSM_WORK/aws.err" | head -n 1 || true)
   echo "$NAME: aws $1 $2 failed: ${summary:-details suppressed (they can quote parameter data)}" >&2
   return 1
+}
+
+# Prints a parameter's current version. No --with-decryption: the value is
+# never requested, so this needs no decrypt and returns no secret.
+envssm_version() { # name
+  envssm_aws ssm get-parameter --name "$1" --query Parameter.Version --output text
 }
 
 # Fetches one decrypted parameter value into a file.

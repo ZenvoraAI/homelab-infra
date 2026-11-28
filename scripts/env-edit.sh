@@ -6,44 +6,60 @@ set -eu
 # service pulls the pair into the host file (README "Env files from SSM"), so
 # this is the only way the file changes.
 #
-#   scripts/env-edit.sh --profile env-backup-temp family-media/api            # opens $EDITOR
-#   scripts/env-edit.sh --profile env-backup-temp --from-file F aiqiuqi-memorial/api   # scripted
+#   scripts/env-edit.sh --profile env-backup-temp family-media/api                 # opens $EDITOR
+#   scripts/env-edit.sh --profile env-backup-temp --from-file F --yes aiqiuqi-memorial/api   # scripted
 #
-# Fetches the latest pair, checks its sha256, opens the plain file in $EDITOR
-# (or takes F), validates the result, shows which key NAMES were added,
-# removed or changed (never a value), asks for confirmation (not with
-# --from-file), writes both parts exactly as env-to-ssm.sh does, reads them
-# back and checks the sha256, and prints the new versions. The plaintext only
-# exists in a 0700 dir under /dev/shm (else $TMPDIR or /tmp) that is removed
-# on every exit. The writer profile must be named with --profile: there is no
-# default, AWS_PROFILE is not used, and a service read profile is refused.
+# Confirms the profile is the IAM user env-backup-temp, fetches the latest
+# pair at its current versions and checks its sha256, opens the plain file in
+# $EDITOR (or takes F, which must not be readable by group or others),
+# validates the result, shows which key NAMES were added, removed or changed
+# (never a value), checks the handoff key pair across both services when it is
+# touched, asks for confirmation (--yes skips that, with --from-file only),
+# refuses if either part's version moved since the fetch, writes both parts
+# exactly as env-to-ssm.sh does, reads them back, checks the sha256, and
+# prints the new versions.
+#
+# The plaintext only exists in a 0700 dir under /dev/shm (else $TMPDIR, else
+# /tmp), removed on every exit the shell sees -- not on SIGKILL or a power
+# loss, which leave it until the next reboot (/dev/shm) or tmp cleanup. The
+# editor runs with HOME and the XDG state/data/cache dirs inside that dir, and
+# vi/vim/nvim with no swap, viminfo/shada, undo or backup files. The writer
+# must be named with --profile: there is no default, AWS_PROFILE is not used,
+# and a service read profile is refused.
 
 NAME=env-edit
 # shellcheck source=scripts/lib/env-ssm-lib.sh source-path=SCRIPTDIR
 . "$(dirname -- "$0")/lib/env-ssm-lib.sh"
+# shellcheck source=scripts/lib/env-handoff-lib.sh source-path=SCRIPTDIR
+. "$(dirname -- "$0")/lib/env-handoff-lib.sh"
 
 umask 077
 
 KEY_RE='^[A-Za-z_][A-Za-z0-9_]*='
 
 usage() {
-  echo "usage: $0 --profile WRITER_PROFILE [--from-file PATH] <service>" >&2
+  echo "usage: $0 --profile WRITER_PROFILE [--from-file PATH [--yes]] [--allow-handoff-mismatch] <service>" >&2
   echo "services: $(printf '%s\n' "$ENVSSM_CANONICAL" | awk 'NF == 2 { printf "%s ", $1 }')" >&2
   exit 2
 }
 
 PROFILE_ARG=''
 FROM_FILE=''
+ASSUME_YES=0
+ALLOW_HANDOFF_MISMATCH=0
 SERVICE=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --profile) [ "$#" -ge 2 ] || usage; PROFILE_ARG=$2; shift 2 ;;
     --from-file) [ "$#" -ge 2 ] || usage; FROM_FILE=$2; shift 2 ;;
+    --yes) ASSUME_YES=1; shift ;;
+    --allow-handoff-mismatch) ALLOW_HANDOFF_MISMATCH=1; shift ;;
     -*) usage ;;
     *) [ -z "$SERVICE" ] || usage; SERVICE=$1; shift ;;
   esac
 done
 [ -n "$SERVICE" ] || usage
+[ "$ASSUME_YES" -eq 0 ] || [ -n "$FROM_FILE" ] || envssm_die "--yes is only for --from-file (an editor session always asks)"
 envssm_is_canonical "$SERVICE" || envssm_die "$SERVICE is not edited here: only services whose deploy pulls /env (ENVSSM_CANONICAL) -- refusing"
 ROW=$(envssm_service_row "$SERVICE") || usage
 SRC_PATH="$ENVSSM_SECRETS_ROOT/${ROW% *}"
@@ -51,38 +67,55 @@ PARAM="$ENVSSM_PREFIX/$SERVICE"
 
 # Explicit writer only: AWS_PROFILE is ignored on purpose, so a shell that
 # happens to export a read profile (or the writer) never decides this.
-[ -n "$PROFILE_ARG" ] || envssm_die "no writer profile: pass --profile NAME (the temporary env-backup-temp user; there is no default and AWS_PROFILE is not used)"
+[ -n "$PROFILE_ARG" ] || envssm_die "no writer profile: pass --profile NAME (the temporary $ENVSSM_WRITER_USER user; there is no default and AWS_PROFILE is not used)"
 for reader in $ENVSSM_READ_PROFILES; do
   [ "$PROFILE_ARG" != "$reader" ] || envssm_die "$PROFILE_ARG is a service read profile; edits need the writer profile -- refusing"
 done
 envssm_resolve_profile "$PROFILE_ARG"
 
+file_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 if [ -n "$FROM_FILE" ]; then
   [ -f "$FROM_FILE" ] && [ -r "$FROM_FILE" ] || envssm_die "--from-file $FROM_FILE is not a readable file"
+  mode=$(file_mode "$FROM_FILE")
+  [ $((0$mode & 077)) -eq 0 ] || envssm_die "--from-file $FROM_FILE is mode $mode: readable by group or others -- chmod 600 it (or write it under /dev/shm with umask 077); nothing written"
 fi
 
-envssm_make_workdir
+envssm_make_workdir prefer-shm
 trap 'rm -rf "$ENVSSM_WORK"' EXIT
 trap 'exit 130' INT TERM HUP
 
 OLD="$ENVSSM_WORK/old.env"
 NEW="$ENVSSM_WORK/edit.env"
 
+envssm_check_writer
+
 # --- fetch the latest pair -------------------------------------------------------
-envssm_fetch "$PARAM" "$ENVSSM_WORK/fetched-main" || envssm_die "$SERVICE: reading $PARAM failed"
-envssm_fetch "$PARAM-pem" "$ENVSSM_WORK/fetched-pem" || envssm_die "$SERVICE: reading $PARAM-pem failed"
-envssm_assemble "$ENVSSM_WORK/fetched-main" "$ENVSSM_WORK/fetched-pem" "$OLD"
-[ "$(envssm_sha256 "$OLD")" = "$ENVSSM_HDR_SHA" ] \
-  || envssm_die "$SERVICE: the latest pair does not match its recorded sha256 -- fix it first (ssm-to-env.sh --version); nothing written"
+envssm_fetch_pair "$SERVICE" "$OLD"
+FETCHED_V=$ENVSSM_PAIR_V
+FETCHED_PEM_V=$ENVSSM_PAIR_PEM_V
 
 # --- edit ------------------------------------------------------------------------
+run_editor() { # file
+  target=$1
+  mkdir -p "$ENVSSM_WORK/home/state" "$ENVSSM_WORK/home/data" "$ENVSSM_WORK/home/cache"
+  # EDITOR may carry arguments (e.g. "code --wait"), so it is split, unglobbed.
+  set -f
+  # shellcheck disable=SC2086
+  set -- ${EDITOR:-vi}
+  set +f
+  case "${1##*/}" in
+    # No swap file, no viminfo/shada, no undo or backup copy of the plaintext.
+    vi|vim|nvim|vim.basic|vim.tiny) set -- "$@" -n -i NONE '+set noundofile nobackup nowritebackup' ;;
+  esac
+  HOME="$ENVSSM_WORK/home" XDG_STATE_HOME="$ENVSSM_WORK/home/state" XDG_DATA_HOME="$ENVSSM_WORK/home/data" \
+    XDG_CACHE_HOME="$ENVSSM_WORK/home/cache" "$@" "$target"
+}
 if [ -n "$FROM_FILE" ]; then
   cat -- "$FROM_FILE" >"$NEW"
+  echo "$NAME: note: $FROM_FILE holds the whole env in plain text -- delete it when this is done"
 else
   cp "$OLD" "$NEW"
-  # EDITOR may carry arguments (e.g. "vim -n -i NONE"), so it is split.
-  # shellcheck disable=SC2086
-  ${EDITOR:-vi} "$NEW" || envssm_die "the editor exited non-zero; nothing written"
+  run_editor "$NEW" || envssm_die "the editor exited non-zero; nothing written"
 fi
 if cmp -s "$OLD" "$NEW"; then
   echo "$NAME: $SERVICE: no change; nothing written"
@@ -91,12 +124,8 @@ fi
 
 # --- validate (line numbers and key names only) -----------------------------------
 envssm_check_source "$NEW" "$SERVICE"
-# The deploy's shape check: blank lines, comments and KEY=value only.
-bad_lines=$(LC_ALL=C awk -v re="$KEY_RE" '
-  /^[ \t]*$/ || /^[ \t]*#/ { next }
-  $0 !~ re { printf "%s%d", sep, NR; sep = "," }
-' "$NEW")
-[ -z "$bad_lines" ] || envssm_die "$SERVICE: line(s) $bad_lines are not KEY=value (content withheld) -- nothing written"
+bad_lines=$(envssm_check_shape "$NEW") \
+  || envssm_die "$SERVICE: line(s) $bad_lines are not KEY=value (content withheld) -- nothing written"
 # A key may repeat only as often as it already did: a new duplicate is a
 # mistake (Compose takes the last one, silently).
 dups=$(LC_ALL=C awk -v re="$KEY_RE" '
@@ -129,8 +158,32 @@ if [ -s "$ENVSSM_WORK/diff" ]; then
 else
   echo "  (no key changed: only comments, blank lines or order)"
 fi
+touched() { grep -Eq " ($1)\$" "$ENVSSM_WORK/diff"; }
 
-if [ -z "$FROM_FILE" ]; then
+# --- handoff key pair ------------------------------------------------------------
+# The writer can read both pairs, so a family key memorial does not accept (or
+# a memorial key list without family's key) is caught here, not by users.
+HANDOFF_FAMILY='' HANDOFF_MEMORIAL=''
+case "$SERVICE" in
+  family-media/api) touched 'FM_HANDOFF_KEY_ID|FM_HANDOFF_PRIVATE_KEY_PEM' && HANDOFF_FAMILY=$NEW && HANDOFF_MEMORIAL=other ;;
+  aiqiuqi-memorial/api) touched 'MEMORIAL_HANDOFF_PUBLIC_KEYS' && HANDOFF_MEMORIAL=$NEW && HANDOFF_FAMILY=other ;;
+esac
+if [ -n "$HANDOFF_FAMILY" ]; then
+  if [ "$HANDOFF_FAMILY" = other ]; then
+    envssm_fetch_pair family-media/api "$ENVSSM_WORK/other.env"; HANDOFF_FAMILY="$ENVSSM_WORK/other.env"
+  else
+    envssm_fetch_pair aiqiuqi-memorial/api "$ENVSSM_WORK/other.env"; HANDOFF_MEMORIAL="$ENVSSM_WORK/other.env"
+  fi
+  if reason=$(envhandoff_check "$HANDOFF_FAMILY" "$HANDOFF_MEMORIAL" "$ENVSSM_WORK"); then
+    echo "$NAME: handoff: family's key and kid are listed in memorial's MEMORIAL_HANDOFF_PUBLIC_KEYS"
+  elif [ "$ALLOW_HANDOFF_MISMATCH" -eq 1 ]; then
+    echo "$NAME: WARNING: handoff mismatch allowed (--allow-handoff-mismatch): $reason"
+  else
+    envssm_die "handoff: $reason -- refusing (the 3-step rotation in README \"Per-key parameters\" never needs a mismatch; --allow-handoff-mismatch overrides); nothing written"
+  fi
+fi
+
+if [ "$ASSUME_YES" -eq 0 ]; then
   printf '%s' "$NAME: write this to $PARAM and $PARAM-pem? [y/N] " >&2
   read -r answer || answer=''
   case "$answer" in
@@ -140,14 +193,18 @@ if [ -z "$FROM_FILE" ]; then
 fi
 
 # --- write -----------------------------------------------------------------------
-# Someone else's edit since the fetch would be silently undone: refuse instead.
-envssm_fetch "$PARAM" "$ENVSSM_WORK/recheck-main" || envssm_die "$SERVICE: re-reading $PARAM failed; nothing written"
-cmp -s "$ENVSSM_WORK/fetched-main" "$ENVSSM_WORK/recheck-main" \
-  || envssm_die "$SERVICE: $PARAM changed since it was fetched -- rerun to edit the new version; nothing written"
+# Someone else's edit since the fetch would be silently undone: refuse when
+# either part's version moved. SSM has no conditional put, so a write landing
+# between this check and the put below (well under a second) is not caught;
+# the next deploy's log and the versions printed below show it.
+now_v=$(envssm_version "$PARAM") || envssm_die "$SERVICE: re-reading the version of $PARAM failed; nothing written"
+now_pem_v=$(envssm_version "$PARAM-pem") || envssm_die "$SERVICE: re-reading the version of $PARAM-pem failed; nothing written"
+[ "$now_v" = "$FETCHED_V" ] && [ "$now_pem_v" = "$FETCHED_PEM_V" ] \
+  || envssm_die "$SERVICE: $PARAM changed since it was fetched (v$FETCHED_V/v$FETCHED_PEM_V, now v$now_v/v$now_pem_v) -- rerun to edit the new version; nothing written"
 
 envssm_write_pair "$SERVICE" "$PARAM" "$SRC_PATH" "$ENVSSM_WORK/main" "$ENVSSM_WORK/pem"
 envssm_read_back "$SERVICE" "$PARAM" "$NEW_SHA" "the edited file"
-echo "$NAME: $SERVICE: wrote $PARAM version $ENVSSM_MAIN_VERSION and $PARAM-pem version $ENVSSM_PEM_VERSION, sha256 $NEW_SHA match"
+echo "$NAME: $SERVICE: wrote $PARAM version $ENVSSM_MAIN_VERSION and $PARAM-pem version $ENVSSM_PEM_VERSION (read back, hash verified)"
 
 # Keys whose per-key parameter is kept for other readers: that copy is now stale.
 envssm_mirrors "$SERVICE" | while read -r key param; do

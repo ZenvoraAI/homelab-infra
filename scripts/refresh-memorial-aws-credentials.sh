@@ -19,13 +19,14 @@ set -eu
 # aiqiuqi-memorial Part A; only the API's qiuqi-api IAM user remains. A leftover
 # worker.env on the host is deliberately not touched.
 #
-# Usage, on the host:
-#   sudo AWS_PROFILE=memorial-ssm ./refresh-memorial-aws-credentials.sh
-#   cd /opt/homelab-infra && sudo docker compose up -d --force-recreate memorial-api
-#
-# The recreate is not optional: docker compose reads env_file at container
-# creation, so an updated file changes nothing until the container is replaced.
+# Superseded for api.env: that file now comes whole from SSM
+# /env/aiqiuqi-memorial/api (README "Env files from SSM"), and this script
+# refuses it before fetching anything (secretlib_refuse_canonical). Rotate the
+# credentials with scripts/env-edit.sh and update the API_AWS_* mirror
+# parameters (README "Per-key parameters"). Kept for its validation rules and
+# for any non-canonical target added later.
 
+# shellcheck source=scripts/lib/secret-file-lib.sh source-path=SCRIPTDIR
 . "$(dirname -- "$0")/lib/secret-file-lib.sh"
 
 SECRETS_DIR=${SECRETS_DIR:-/opt/secrets/aiqiuqi-memorial}
@@ -81,6 +82,7 @@ for target in $TARGETS; do
   env_file=${rest%%:*}
   param=${rest#*:}
 
+  secretlib_refuse_canonical "$env_file"
   test -f "$env_file" || fail "$env_file not found (service: $service)"
 
   key_id=$(ssm_get "${param}_AWS_ACCESS_KEY_ID")

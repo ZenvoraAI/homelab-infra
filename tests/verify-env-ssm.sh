@@ -16,10 +16,19 @@ set -euo pipefail
 # in text mode and turns \r\n and a lone \r into \n (seen with 2.36.19).
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BACKUP="$ROOT/scripts/env-to-ssm.sh"
-RESTORE="$ROOT/scripts/ssm-to-env.sh"
-
 TMP="$(mktemp -d)"
+# The format tests below use the family and memorial files as their richest
+# fixtures, but those two are canonical (/env is their source, env-to-ssm.sh
+# refuses to back them up -- section 14 tests that with the real lib). So the
+# scripts run from a copy whose ENVSSM_CANONICAL table is empty.
+mkdir -p "$TMP/repo"
+cp -R "$ROOT/scripts" "$TMP/repo/scripts"
+sed "/^ENVSSM_CANONICAL='\$/,/^'\$/c\\
+ENVSSM_CANONICAL=''
+" "$ROOT/scripts/lib/env-ssm-lib.sh" >"$TMP/repo/scripts/lib/env-ssm-lib.sh"
+grep -qx "ENVSSM_CANONICAL=''" "$TMP/repo/scripts/lib/env-ssm-lib.sh" || { echo "FAIL: could not empty ENVSSM_CANONICAL in the copy" >&2; exit 1; }
+BACKUP="$TMP/repo/scripts/env-to-ssm.sh"
+RESTORE="$TMP/repo/scripts/ssm-to-env.sh"
 BIN="$TMP/bin"
 SECRETS="$TMP/secrets"
 STORE="$TMP/store"
@@ -37,7 +46,7 @@ cat >"$BIN/aws" <<'STUB'
 set -u
 printf '%s\n' "$*" >>"$STUB_DIR/aws.argv"
 printf '%s\n' "$*" >>"$STUB_DIR/aws.argv.all"
-op='' name='' value='' type='' tier='' overwrite=0 decrypt=0 profile=''
+op='' name='' value='' type='' tier='' overwrite=0 decrypt=0 profile='' query=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     ssm) op=$2; shift ;;
@@ -46,6 +55,7 @@ while [ "$#" -gt 0 ]; do
     --type) type=$2; shift ;;
     --tier) tier=$2; shift ;;
     --profile) profile=$2; shift ;;
+    --query) query=$2; shift ;;
     --overwrite) overwrite=1 ;;
     --with-decryption) decrypt=1 ;;
   esac
@@ -77,6 +87,11 @@ case "$op" in
     cp "$STUB_DIR/store/$key" "$STUB_DIR/store/$key.v$v"
     echo "$v" ;;
   get-parameter)
+    if [ "$query" = Parameter.Version ]; then
+      # Metadata only: no decryption needed, no value returned.
+      [ -f "$STUB_DIR/store/$key.version" ] || { echo "An error occurred (ParameterNotFound) when calling the GetParameter operation" >&2; exit 254; }
+      cat "$STUB_DIR/store/$key.version"; exit 0
+    fi
     [ "$decrypt" -eq 1 ] || { echo "stub: no --with-decryption" >&2; exit 252; }
     src="$STUB_DIR/store/$key${version:+.v$version}"
     [ -f "$src" ] || { echo "An error occurred (ParameterNotFound) when calling the GetParameter operation" >&2; exit 254; }
@@ -222,7 +237,7 @@ for row in "family-media/api family-media/api-laravel.env" "aiqiuqi-memorial/api
            "zenvora-admin/app zenvora-admin/.env" "family-media/origin-secret family-media-origin/origin-secret.map"; do
   svc=${row% *}; rel=${row#* }
   target="$SCRATCH/$(printf '%s' "$svc" | tr '/' '_').env"
-  OUT=$(restore --profile env-backup-temp --target "$target" "$svc") || fail "restore $svc must pass:\n$OUT"
+  OUT=$(restore --profile env-backup-temp --print-sha --target "$target" "$svc") || fail "restore $svc must pass:\n$OUT"
   cmp -s "$target" "$SECRETS/$rel" || fail "$svc: restored file differs from the source"
   sha=$(sha256 "$target")
   grep -q "sha256 $sha" <<<"$OUT" || fail "$svc: restore did not print the file's sha256:\n$OUT"
@@ -273,6 +288,7 @@ reset_store
 backup --profile env-backup-temp family-media/api >/dev/null
 PEMV=$(stored /env/family-media/api-pem)
 { sed -n 1p "$PEMV"; sed -n 3p "$PEMV"; sed -n 2p "$PEMV"; sed -n '4,$p' "$PEMV"; } >"$PEMV.x" && mv "$PEMV.x" "$PEMV"
+cp "$PEMV" "$PEMV.v$(cat "$PEMV.version")"   # the restore reads the pinned version
 if OUT=$(restore --profile env-backup-temp --target "$SCRATCH/reorder.env" family-media/api); then fail "reordered PEM lines must be refused"; fi
 grep -q 'pem line order does not match the markers' <<<"$OUT" || fail "expected the marker-order refusal, got:\n$OUT"
 [ ! -e "$SCRATCH/reorder.env" ] || fail "reordered PEM lines were written"
@@ -369,6 +385,26 @@ write_fixtures; reset_store
 chmod 000 "$SECRETS/zenvora-admin/.env"
 OUT=$(backup --profile env-backup-temp zenvora-admin/app) || fail "an unreadable file must be read with sudo:\n$OUT"
 grep -q '^cat -- .*zenvora-admin/.env$' "$TMP/sudo.log" || fail "sudo cat was not used"
+
+# 14. The real lib: canonical services are never backed up (their source is
+# /env); `all` skips them with a note; --dry-run and --verify-only still run.
+write_fixtures; reset_store
+REAL_BACKUP="$ROOT/scripts/env-to-ssm.sh"
+for svc in family-media/api aiqiuqi-memorial/api; do
+  if OUT=$(run "${ENVSSM_TEST_SH:-sh}" "$REAL_BACKUP" --profile env-backup-temp "$svc"); then fail "backing up canonical $svc must be refused:\n$OUT"; fi
+  grep -q "$svc: /env is its source of truth" <<<"$OUT" || fail "expected the canonical refusal for $svc:\n$OUT"
+done
+[ ! -e "$TMP/aws.argv" ] || fail "a refused canonical backup called aws:\n$(cat "$TMP/aws.argv")"
+OUT=$(run "${ENVSSM_TEST_SH:-sh}" "$REAL_BACKUP" --profile env-backup-temp all) || fail "backup all must pass, skipping canonical services:\n$OUT"
+for svc in family-media/api aiqiuqi-memorial/api; do
+  grep -q "$svc: /env is its source (edit with env-edit.sh) -- not backed up" <<<"$OUT" || fail "all did not skip $svc with a note:\n$OUT"
+  [ ! -e "$(stored "/env/$svc")" ] || fail "all wrote canonical /env/$svc"
+done
+[ "$(grep -c 'sha256 [0-9a-f]\{64\} match' <<<"$OUT")" -eq 4 ] || fail "all must still back up the 4 other services:\n$OUT"
+OUT=$(run "${ENVSSM_TEST_SH:-sh}" "$REAL_BACKUP" --dry-run family-media/api) || fail "--dry-run of a canonical service must work:\n$OUT"
+run "${ENVSSM_TEST_SH:-sh}" "$BACKUP" --profile env-backup-temp family-media/api >/dev/null || fail "seeding via the copy failed"
+OUT=$(run "${ENVSSM_TEST_SH:-sh}" "$REAL_BACKUP" --profile env-backup-temp --verify-only family-media/api) || fail "--verify-only of a canonical service must work:\n$OUT"
+grep -q 'sha256 [0-9a-f]\{64\} match' <<<"$OUT" || fail "--verify-only did not verify:\n$OUT"
 
 # 13. No fake value anywhere: outputs of every run above, and every aws argv.
 for v in "${FAKES[@]}"; do

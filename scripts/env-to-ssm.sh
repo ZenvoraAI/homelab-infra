@@ -12,6 +12,12 @@ set -eu
 #   scripts/env-to-ssm.sh --dry-run all            # sizes and names, no AWS call
 #   scripts/env-to-ssm.sh --profile P --verify-only all   # SSM still matches the file?
 #
+# A service whose deploy pulls its file from /env (ENVSSM_CANONICAL: family and
+# memorial APIs) is never backed up: /env is its source, and writing the host
+# file over it would silently revert an env-edit.sh change that the next
+# deploy has not pulled yet. Backup mode refuses it, `all` skips it with a
+# note; --dry-run and --verify-only still work. Edit it with env-edit.sh.
+#
 # Run as the deploy user; a file it cannot read is read with `sudo cat` into a
 # 0700 temp dir that is removed on every exit. Values go to the CLI as
 # file://, never on the command line (where ps would show them).
@@ -55,6 +61,10 @@ if [ "$SERVICE" = all ]; then
   for svc in $(envssm_service_names); do
     row=$(envssm_service_row "$svc")
     path="$ENVSSM_SECRETS_ROOT/${row% *}"
+    if [ "$MODE" = backup ] && envssm_is_canonical "$svc"; then
+      echo "$NAME: $svc: /env is its source (edit with env-edit.sh) -- not backed up"
+      continue
+    fi
     if [ "${row#* }" = optional ] && [ -x "$(dirname -- "$path")" ] && [ ! -e "$path" ]; then
       echo "$NAME: $svc: optional, $path absent -- skipped"
       continue
@@ -68,6 +78,9 @@ if [ "$SERVICE" = all ]; then
 fi
 
 ROW=$(envssm_service_row "$SERVICE") || usage
+if [ "$MODE" = backup ] && envssm_is_canonical "$SERVICE"; then
+  envssm_die "$SERVICE: /env is its source of truth, so the host file is never written over it (that would revert an unpulled env-edit) -- use env-edit.sh; --dry-run and --verify-only still work"
+fi
 SRC_PATH="$ENVSSM_SECRETS_ROOT/${ROW% *}"
 PARAM="$ENVSSM_PREFIX/$SERVICE"
 PEM_PARAM="$PARAM-pem"

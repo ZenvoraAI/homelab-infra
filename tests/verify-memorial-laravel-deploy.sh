@@ -90,7 +90,7 @@ if OUT="$(run_deploy main)"; then fail "a non-sha release must be refused:\n$OUT
 # 2. Happy path, upgrade from PREV: every step, in order, pin last.
 valid_env
 OUT="$(STUB_PIN="$PREV@$DIGEST" run_deploy "$REL")" || fail "happy path failed:\n$OUT\n$(cat "$LOG")"
-order=("ssm-to-env.sh --profile memorial-ssm --target $TMP/secrets/api.env --force --if-changed --keep-one-backup aiqiuqi-memorial/api"
+order=("ssm-to-env.sh --profile memorial-ssm --target $TMP/secrets/api.env --force --if-changed --keep-one-backup --check-shape aiqiuqi-memorial/api"
   "env-ssm-mirror-check.sh --profile memorial-ssm aiqiuqi-memorial/api $TMP/secrets/api.env" "compose pull" "artisan memorial:preflight"
   "pg_dump --format=custom" "artisan migrate --force" "compose up -d memorial-api-laravel memorial-api-laravel-scheduler"
   "fpm-auth.sock" "image-pins.sh promote memorial-api-laravel $REL")

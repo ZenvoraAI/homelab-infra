@@ -17,6 +17,7 @@ set -eu
 #     added there it must also be added here AND the verify-handoff-env
 #     doc test (tests/verify-handoff-env.sh) updated to match.
 
+# shellcheck source=scripts/lib/secret-file-lib.sh source-path=SCRIPTDIR
 . "$(dirname -- "$0")/lib/secret-file-lib.sh"
 
 # SECRETS_DIR is the standard override used by tests/verify-*.sh to point
@@ -31,6 +32,7 @@ PARAM_PREFIX=/aiqiuqi-memorial/preview
 MEMORIAL_HANDOFF_TENANT=aiqiuqi
 PROFILE=${AWS_PROFILE:-memorial-ssm}
 
+secretlib_refuse_canonical "$ENV_FILE"
 test -f "$ENV_FILE" || { echo "refresh-memorial-secrets: $ENV_FILE not found" >&2; exit 1; }
 
 # Preserve the original owner: this script runs via sudo, and docker compose

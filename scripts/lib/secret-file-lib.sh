@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # Shared helpers for the refresh-*-secrets.sh scripts. Not standalone --
 # sourced with `. "$(dirname "$0")/lib/secret-file-lib.sh"`.
 #
@@ -43,4 +44,24 @@ secretlib_finalize() {
   mv "$env_file.new" "$env_file"
   chown "$orig_owner" "$env_file"
   chmod 600 "$env_file"
+}
+
+# Refuses (exit 1, before any fetch) to touch an env file whose source of
+# truth is SSM /env (ENVSSM_CANONICAL in env-ssm-lib.sh: the family and
+# memorial API files). A per-key write there would last only until the next
+# deploy pulls /env again, and make the host differ from /env meanwhile.
+# Matches the configured path, the same path under any root (…/family-media/
+# api-laravel.env), and any other name for the same file (-ef: a symlink).
+secretlib_refuse_canonical() {
+  # shellcheck source=scripts/lib/env-ssm-lib.sh source-path=SCRIPTDIR
+  . "$(dirname -- "$0")/lib/env-ssm-lib.sh"
+  for canon in $(envssm_canonical_paths); do
+    rel=${canon#"$ENVSSM_SECRETS_ROOT"/}
+    case "$1" in
+      "$canon"|*/"$rel") ;;
+      *) [ "$1" -ef "$canon" ] || continue ;;
+    esac
+    echo "$(basename -- "$0"): $1 comes from SSM /env (README \"Env files from SSM\"); per-key refreshes no longer write it -- use scripts/env-edit.sh. Nothing fetched or written." >&2
+    exit 1
+  done
 }

@@ -4,7 +4,8 @@ set -eu
 # Restores a service's env file from its two SSM parameters (written by
 # env-to-ssm.sh; format in lib/env-ssm-lib.sh). The reassembled file must
 # match the sha256 recorded at backup time, or nothing is written. Prints only
-# the target path, its size and sha256.
+# the target path, its size and the versions read (the file's sha256 only with
+# --print-sha, for drills: deploy logs never carry a hash of the file).
 #
 #   scripts/ssm-to-env.sh --profile P --target /tmp/drill/api.env family-media/api   # drill
 #   scripts/ssm-to-env.sh --profile P --force family-media/api                        # real restore
@@ -30,11 +31,20 @@ set -eu
 # from SSM") run it with two more flags:
 #   --if-changed       a target that already has the verified content is left
 #                      alone: no rewrite, no .bak, owner and mode untouched.
+#   --check-shape      the reassembled file must be blank lines, comments and
+#                      KEY=value only (envssm_check_shape), or nothing is
+#                      written -- checked before the live file is touched.
 #   --keep-one-backup  after the replace, every older <target>.bak-<UTC
 #                      timestamp> is removed, so exactly one remains (the
 #                      refresh scripts' rotation, secretlib_rotate_backup).
 #                      Best effort: a failed prune is reported, not fatal,
 #                      because the new file is already in place.
+# --if-changed compares content only: an identical file whose owner or mode
+# drifted is left as it is.
+#
+# Without --version, the current version of each part is read first (no
+# decryption) and exactly those versions are fetched, so the two parts always
+# come from one moment and the output can name them.
 
 NAME=ssm-to-env
 # shellcheck source=scripts/lib/env-ssm-lib.sh source-path=SCRIPTDIR
@@ -43,7 +53,7 @@ NAME=ssm-to-env
 umask 077
 
 usage() {
-  echo "usage: $0 [--profile NAME] [--target ABSOLUTE_PATH] [--force [--if-changed] [--keep-one-backup]] [--owner USER[:GROUP]] [--mode 0600] [--version N [--pem-version M]] <service>" >&2
+  echo "usage: $0 [--profile NAME] [--target ABSOLUTE_PATH] [--force [--if-changed] [--keep-one-backup]] [--check-shape] [--print-sha] [--owner USER[:GROUP]] [--mode 0600] [--version N [--pem-version M]] <service>" >&2
   echo "services: $(envssm_usage_services)" >&2
   exit 2
 }
@@ -53,6 +63,8 @@ TARGET=''
 FORCE=0
 IF_CHANGED=0
 KEEP_ONE=0
+CHECK_SHAPE=0
+PRINT_SHA=0
 OWNER=''
 FILE_MODE=''
 VERSION=''
@@ -71,6 +83,8 @@ while [ "$#" -gt 0 ]; do
     --force) FORCE=1; shift ;;
     --if-changed) IF_CHANGED=1; shift ;;
     --keep-one-backup) KEEP_ONE=1; shift ;;
+    --check-shape) CHECK_SHAPE=1; shift ;;
+    --print-sha) PRINT_SHA=1; shift ;;
     -*) usage ;;
     *) [ -z "$SERVICE" ] || usage; SERVICE=$1; shift ;;
   esac
@@ -130,17 +144,32 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 
+if [ -z "$VERSION" ]; then
+  VERSION=$(envssm_version "$PARAM") || envssm_die "$SERVICE: reading the version of $PARAM failed"
+  PEM_VERSION=$(envssm_version "$PARAM-pem") || envssm_die "$SERVICE: reading the version of $PARAM-pem failed"
+  check_version "$VERSION"
+  check_version "$PEM_VERSION"
+  MAIN_REF=$PARAM:$VERSION
+  PEM_REF=$PARAM-pem:$PEM_VERSION
+fi
+VERSIONS="$PARAM v$VERSION, $PARAM-pem v$PEM_VERSION"
+sha_note() { [ "$PRINT_SHA" -eq 0 ] || printf ', sha256 %s' "$SHA"; }
+
 envssm_fetch "$MAIN_REF" "$ENVSSM_WORK/main" || envssm_die "$SERVICE: reading $MAIN_REF failed"
 envssm_fetch "$PEM_REF" "$ENVSSM_WORK/pem" || envssm_die "$SERVICE: reading $PEM_REF failed"
 envssm_assemble "$ENVSSM_WORK/main" "$ENVSSM_WORK/pem" "$ENVSSM_WORK/env"
 SHA=$(envssm_sha256 "$ENVSSM_WORK/env")
 [ "$SHA" = "$ENVSSM_HDR_SHA" ] || envssm_die "$SERVICE: reassembled file does not match the sha256 recorded at backup -- nothing written"
+if [ "$CHECK_SHAPE" -eq 1 ]; then
+  bad=$(envssm_check_shape "$ENVSSM_WORK/env") \
+    || envssm_die "$SERVICE: $VERSIONS: line(s) $bad are not KEY=value (content withheld) -- nothing written"
+fi
 
 if [ "$IF_CHANGED" -eq 1 ] && $SUDO test -f "$TARGET"; then
   # shellcheck disable=SC2024  # the copy lands in the caller's 0700 work dir
   $SUDO cat -- "$TARGET" >"$ENVSSM_WORK/current" || envssm_die "cannot read $TARGET -- nothing written"
   if [ "$(envssm_sha256 "$ENVSSM_WORK/current")" = "$SHA" ]; then
-    echo "$NAME: $SERVICE: $TARGET already matches $MAIN_REF (sha256 $SHA) -- unchanged"
+    echo "$NAME: $SERVICE: $TARGET unchanged ($VERSIONS$(sha_note))"
     exit 0
   fi
 fi
@@ -197,4 +226,4 @@ if [ "$KEEP_ONE" -eq 1 ] && [ -n "$BACKUP" ]; then
   prune_backups || echo "$NAME: $SERVICE: WARNING: pruning older backups of $TARGET failed; remove them by hand" >&2
 fi
 
-echo "$NAME: $SERVICE: restored $TARGET $(envssm_bytes "$ENVSSM_WORK/env") bytes, sha256 $SHA (matches backup)"
+echo "$NAME: $SERVICE: changed: installed $TARGET from $VERSIONS, $(envssm_bytes "$ENVSSM_WORK/env") bytes (hash verified$(sha_note))"

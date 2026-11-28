@@ -55,12 +55,16 @@ printf '%s' "$RELEASE_SHA" | grep -Eqx '[0-9a-f]{40}' || die "usage: $0 <40-hex 
 # homelab: the whole file comes from /env, the handoff keys included. The
 # per-key refresh (refresh-family-media-secrets.sh) no longer runs here: it
 # would make the file differ from /env, and the next deploy would revert it.
-# Fail closed: a failed read or hash check leaves the file as it was and stops
-# here. An identical file is not touched; a replaced one is kept as the one
-# .bak. sudo drops the ubuntu user's AWS profiles, so they are passed explicitly.
-sudo env PATH="$PATH" "${AWS_PROFILE_ENV[@]}" scripts/ssm-to-env.sh --profile "$ENV_SSM_PROFILE" \
-  --target "$ENV_FILE" --force --if-changed --keep-one-backup "$ENV_SSM_SERVICE" \
-  || die "pulling $ENV_FILE from SSM /env/$ENV_SSM_SERVICE failed; nothing was changed"
+# Fail closed: a failed read, hash check or shape check (--check-shape, on the
+# staged copy) leaves the file as it was and stops here. An identical file is
+# not touched; a replaced one is kept as the one .bak, which a rollback after
+# the swap puts back. The output names versions, never a hash of the file.
+# sudo drops the ubuntu user's AWS profiles, so they are passed explicitly.
+pull_out="$(sudo env PATH="$PATH" "${AWS_PROFILE_ENV[@]}" scripts/ssm-to-env.sh --profile "$ENV_SSM_PROFILE" \
+  --target "$ENV_FILE" --force --if-changed --keep-one-backup --check-shape "$ENV_SSM_SERVICE" 2>&1)" \
+  || { printf '%s\n' "$pull_out" >&2; die "pulling $ENV_FILE from SSM /env/$ENV_SSM_SERVICE failed; nothing was changed"; }
+printf '%s\n' "$pull_out"
+ENV_BACKUP="$(printf '%s\n' "$pull_out" | sed -n 's/^ssm-to-env: [^ ]*: previous file kept as //p' | tail -n 1)"
 # Advisory, never fails the deploy: per-key copies kept for the handoff partner and rotations.
 env "${AWS_PROFILE_ENV[@]}" scripts/env-ssm-mirror-check.sh --profile "$ENV_SSM_PROFILE" "$ENV_SSM_SERVICE" "$ENV_FILE" \
   || say "mirror check did not run; continuing (/env is the source of truth)"
@@ -127,7 +131,22 @@ PREV_TAG="$(scripts/image-pins.sh get "$API" 2>/dev/null | sed -nE 's/^([0-9a-f]
 
 docker compose up -d "$API" 2>&1 | redact
 
+# The release being rolled back to ran with the env file the pull replaced.
+restore_env_backup() {
+  [ -n "$ENV_BACKUP" ] || return 0
+  local owner tmp=""
+  if owner="$(sudo stat -c '%u:%g' "$ENV_FILE" 2>/dev/null || sudo stat -f '%u:%g' "$ENV_FILE")" \
+    && tmp="$(sudo mktemp "$ENV_FILE.rollback.XXXXXX")" \
+    && sudo install -m 600 "$ENV_BACKUP" "$tmp" && sudo chown "$owner" "$tmp" && sudo mv -f "$tmp" "$ENV_FILE"; then
+    echo "WARNING: restored $ENV_FILE from $ENV_BACKUP for the previous release: the host file now differs from /env/$ENV_SSM_SERVICE until that is fixed with env-edit and redeployed" >&2
+  else
+    [ -z "$tmp" ] || sudo rm -f -- "$tmp" || true
+    echo "restoring $ENV_FILE from $ENV_BACKUP failed; check the host now" >&2
+  fi
+}
+
 rollback() {
+  restore_env_backup
   if [ -z "$PREV_TAG" ]; then
     # Only the first deploy has no previous release: stop, do not serve.
     echo "no previous release; stopping the new service" >&2

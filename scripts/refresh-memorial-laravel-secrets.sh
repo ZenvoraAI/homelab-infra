@@ -12,6 +12,7 @@ set -eu
 # Express deploys keep working before and after /aiqiuqi-memorial/preview/APP_KEY
 # exists. Never echoes the value.
 
+# shellcheck source=scripts/lib/secret-file-lib.sh source-path=SCRIPTDIR
 . "$(dirname -- "$0")/lib/secret-file-lib.sh"
 
 SECRETS_DIR=${SECRETS_DIR:-/opt/secrets/aiqiuqi-memorial}
@@ -25,6 +26,7 @@ APP_KEY_BYTES=32
 
 fail() { echo "refresh-memorial-laravel-secrets: $*" >&2; exit 1; }
 
+secretlib_refuse_canonical "$ENV_FILE"
 test -f "$ENV_FILE" || fail "$ENV_FILE not found"
 
 APP_KEY=$(aws ssm get-parameter --profile "$PROFILE" --with-decryption \

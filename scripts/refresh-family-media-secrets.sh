@@ -6,17 +6,19 @@ set -eu
 # has to be hand-copied through a terminal again (that's what corrupted it
 # before). Never echoes the fetched values.
 
+# shellcheck source=scripts/lib/secret-file-lib.sh source-path=SCRIPTDIR
 . "$(dirname -- "$0")/lib/secret-file-lib.sh"
 
-# The Express API's .env by default; the Laravel API's own file when
-# scripts/deploy-family-api-laravel.sh passes it. No other path: this runs
-# under sudo and rewrites the file it is given.
+# The Express API's .env only. The Laravel API's api-laravel.env comes whole
+# from SSM /env/family-media/api (README "Env files from SSM") and is refused.
+# No other path: this runs under sudo and rewrites the file it is given.
 SECRETS_DIR=${FAMILY_SECRETS_DIR:-/opt/secrets/family-media}
 case "${1:-}" in
   "") ENV_FILE="$SECRETS_DIR/.env" ;;
-  "$SECRETS_DIR/.env"|"$SECRETS_DIR/api-laravel.env") ENV_FILE="$1" ;;
-  *) echo "refresh-family-media-secrets: usage: $0 [$SECRETS_DIR/.env|$SECRETS_DIR/api-laravel.env]" >&2; exit 1 ;;
+  "$SECRETS_DIR/.env") ENV_FILE="$1" ;;
+  *) echo "refresh-family-media-secrets: usage: $0 [$SECRETS_DIR/.env] (api-laravel.env comes from SSM /env: scripts/env-edit.sh)" >&2; exit 1 ;;
 esac
+secretlib_refuse_canonical "$ENV_FILE"
 PARAM_PREFIX=/family-media/prod
 PROFILE=${AWS_PROFILE:-family-ssm}
 

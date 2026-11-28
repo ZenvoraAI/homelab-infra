@@ -111,7 +111,7 @@ if OUT="$(run_deploy main)"; then fail "a non-sha release must be refused:\n$OUT
 # 2. Happy path, upgrade from PREV: every step, in order, pin last.
 valid_env
 OUT="$(STUB_PIN="$PREV@$DIGEST" run_deploy "$REL")" || fail "happy path failed:\n$OUT\n$(cat "$LOG")"
-order=("ssm-to-env.sh --profile family-ssm --target $ENV --force --if-changed --keep-one-backup family-media/api"
+order=("ssm-to-env.sh --profile family-ssm --target $ENV --force --if-changed --keep-one-backup --check-shape family-media/api"
   "env-ssm-mirror-check.sh --profile family-ssm family-media/api $ENV" "compose pull family-api-laravel" "artisan family:preflight --allow-pending"
   "pg_dump --format=custom --no-owner --no-privileges family_media" "pg_restore --list" "artisan migrate --force"
   "compose up -d family-api-laravel" "fpm-auth.sock" "image-pins.sh promote family-api-laravel $REL")
